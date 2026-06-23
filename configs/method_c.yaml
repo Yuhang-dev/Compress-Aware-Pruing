@@ -1,0 +1,8 @@
+defaults:
+  - base.yaml
+
+method:
+  name: method_c
+  safety_key_top_percent: 1.0
+  hinge_margin: 0.0
+  target_pruner: wanda

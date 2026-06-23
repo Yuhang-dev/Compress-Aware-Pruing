@@ -1,0 +1,11 @@
+defaults:
+  - base.yaml
+
+method:
+  name: method_b
+  target_matrices:
+    - o_proj
+    - down_proj
+  ste: true
+  mask_trainable: false
+  output_dense_checkpoint: true

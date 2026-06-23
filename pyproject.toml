@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casafety"
+version = "0.1.0"
+description = "Compression-aware safety entanglement experiment scaffold"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml",
+  "torch",
+  "transformers",
+  "datasets",
+  "pandas",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

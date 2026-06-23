@@ -1,0 +1,10 @@
+defaults:
+  - base.yaml
+
+method:
+  name: method_d
+  enabled: false
+  target_matrices:
+    - o_proj
+    - down_proj
+  matched_k: true

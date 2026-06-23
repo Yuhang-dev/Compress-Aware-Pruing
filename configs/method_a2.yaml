@@ -1,0 +1,12 @@
+defaults:
+  - base.yaml
+
+method:
+  name: method_a
+  variant: a2
+  target_matrices:
+    - o_proj
+    - down_proj
+  target_layers: auto_from_vpref
+  svd_energy: 0.90
+  recompute_subspace_every: 100

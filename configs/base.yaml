@@ -1,0 +1,96 @@
+project:
+  name: casafety
+  output_dir: results
+  artifact_dir: artifacts
+  seed: 0
+
+environment:
+  data_disk: /root/autodl-tmp
+  hf_home: /root/autodl-tmp/hf_cache
+  torch_home: /root/autodl-tmp/torch_cache
+  pip_cache_dir: /root/autodl-tmp/pip_cache
+
+model:
+  name_or_path: meta-llama/Llama-2-7b-chat-hf
+  judge_name_or_path: meta-llama/Llama-Guard-3-8B
+  dtype: bfloat16
+  max_seq_len: 2048
+
+data:
+  harmful_train:
+    name: advbench_train_verified
+    path: null
+    split: train
+  harmful_eval:
+    - name: harmbench
+      path: null
+      split: test
+    - name: strongreject
+      path: null
+      split: test
+    - name: jailbreakbench
+      path: null
+      split: test
+  benign_calib:
+    name: c4
+    path: null
+    split: train
+    num_samples: 128
+    seq_len: 2048
+  refusal_eval:
+    - name: xstest
+      path: null
+      split: test
+    - name: or-bench
+      path: null
+      split: test
+  utility_eval:
+    - wikitext2
+    - mmlu
+    - gsm8k
+    - hellaswag
+
+generation:
+  max_new_tokens: 512
+  temperature: 0.0
+
+training:
+  steps: 1000
+  effective_batch_size: 32
+  learning_rate_lora: 0.0002
+  learning_rate_full_ft: 0.00002
+  lambda_utility: 1.0
+  lambda_entangle: 0.3
+  recompute_every: 100
+  lora:
+    rank: 32
+    alpha: 64
+    target_modules:
+      - o_proj
+      - down_proj
+
+compression:
+  eval_grid:
+    pruners:
+      - wanda
+      - sparsegpt
+      - magnitude
+    sparsities:
+      - 0.25
+      - 0.50
+      - 0.60
+      - 2:4
+    quantization:
+      - nf4
+  train_sample_space:
+    include_dense_probability: 0.10
+    pruners:
+      - wanda
+      - sparsegpt
+    sparsities:
+      - 0.25
+      - 0.50
+      - 0.60
+      - 2:4
+    quantization:
+      - nf4
