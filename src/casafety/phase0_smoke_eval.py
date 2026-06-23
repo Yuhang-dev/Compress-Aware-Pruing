@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import GenerationConfig
 
 from .config import load_config
 from .pruners import compute_mask
@@ -108,11 +109,12 @@ def generate_answer(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
     with torch.inference_mode():
         output = model.generate(
             **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            pad_token_id=tokenizer.eos_token_id,
+            generation_config=GenerationConfig(
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            ),
         )
     new_tokens = output[0, inputs["input_ids"].shape[1] :]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
@@ -251,6 +253,21 @@ def evaluate_condition(
     return rows
 
 
+def parse_sparsity(value: str) -> float | str:
+    if value == "2:4":
+        return value
+    parsed = float(value)
+    if parsed > 1.0:
+        parsed = parsed / 100.0
+    return parsed
+
+
+def format_sparsity_name(value: float | str) -> str:
+    if isinstance(value, str):
+        return value.replace(":", "to")
+    return str(int(round(value * 100)))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
@@ -259,6 +276,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=len(HARMFUL_SMOKE_PROMPTS))
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--calib-max-length", type=int, default=256)
+    parser.add_argument("--sparsities", nargs="+", default=["0.50"])
+    parser.add_argument("--pruners", nargs="+", default=["magnitude", "wanda"])
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--skip-wanda", action="store_true")
     args = parser.parse_args()
@@ -267,12 +286,13 @@ def main() -> None:
     model_id = config["model"]["name_or_path"]
     prompts = HARMFUL_SMOKE_PROMPTS[: args.limit]
 
-    conditions = [
-        EvalCondition("dense", None, None),
-        EvalCondition("magnitude_50", "magnitude", 0.50),
-    ]
-    if not args.skip_wanda:
-        conditions.append(EvalCondition("wanda_50", "wanda", 0.50))
+    pruners = [pruner for pruner in args.pruners if not (args.skip_wanda and pruner == "wanda")]
+    conditions = [EvalCondition("dense", None, None)]
+    for pruner in pruners:
+        for sparsity_text in args.sparsities:
+            sparsity = parse_sparsity(sparsity_text)
+            name = f"{pruner}_{format_sparsity_name(sparsity)}"
+            conditions.append(EvalCondition(name, pruner, sparsity))
 
     all_rows: list[dict[str, object]] = []
     for condition in conditions:
