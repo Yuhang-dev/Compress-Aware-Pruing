@@ -43,15 +43,31 @@ def compute_mask(
         return _mask_2_to_4(scores)
     if not isinstance(sparsity, float):
         raise TypeError(f"sparsity must be float or '2:4', got {sparsity!r}")
-    return _mask_unstructured(scores, sparsity)
+    if method == "wanda":
+        return _mask_unstructured_per_row(scores, sparsity)
+    return _mask_unstructured_global(scores, sparsity)
 
 
-def _mask_unstructured(scores: torch.Tensor, sparsity: float) -> torch.Tensor:
+def _mask_unstructured_global(scores: torch.Tensor, sparsity: float) -> torch.Tensor:
     if not 0.0 <= sparsity < 1.0:
         raise ValueError(f"sparsity must be in [0, 1), got {sparsity}")
     keep = max(1, int(scores.numel() * (1.0 - sparsity)))
-    threshold = torch.topk(scores.flatten(), keep, largest=True).values.min()
-    return (scores >= threshold).to(dtype=scores.dtype)
+    flat_indices = scores.flatten().topk(keep, largest=True).indices
+    mask = torch.zeros(scores.numel(), device=scores.device, dtype=scores.dtype)
+    mask.scatter_(0, flat_indices, 1.0)
+    return mask.reshape_as(scores)
+
+
+def _mask_unstructured_per_row(scores: torch.Tensor, sparsity: float) -> torch.Tensor:
+    if scores.ndim != 2:
+        raise ValueError(f"Per-row pruning requires a 2D weight matrix, got shape {tuple(scores.shape)}")
+    if not 0.0 <= sparsity < 1.0:
+        raise ValueError(f"sparsity must be in [0, 1), got {sparsity}")
+    keep = max(1, int(scores.shape[1] * (1.0 - sparsity)))
+    topk_indices = scores.topk(keep, dim=1, largest=True).indices
+    mask = torch.zeros_like(scores)
+    mask.scatter_(1, topk_indices, 1.0)
+    return mask
 
 
 def _mask_2_to_4(scores: torch.Tensor) -> torch.Tensor:

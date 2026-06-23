@@ -5,12 +5,36 @@ import torch.nn.functional as F
 
 
 def refusal_nll(logits: torch.Tensor, labels: torch.Tensor, ignore_index: int = -100) -> torch.Tensor:
-    vocab = logits.shape[-1]
-    return F.cross_entropy(logits.view(-1, vocab), labels.view(-1), ignore_index=ignore_index)
+    """Causal LM NLL for refusal targets.
+
+    `logits[:, t]` predicts `labels[:, t + 1]`, so this function performs the
+    autoregressive shift internally.
+    """
+
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = labels[:, 1:].contiguous()
+    vocab = shift_logits.shape[-1]
+    return F.cross_entropy(shift_logits.view(-1, vocab), shift_labels.view(-1), ignore_index=ignore_index)
 
 
-def utility_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor) -> torch.Tensor:
+def utility_kl(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    direction: str = "student_teacher",
+) -> torch.Tensor:
+    """Utility-preserving KL.
+
+    Default matches the experiment plan: KL(pi_theta || pi_ref). Use
+    `direction="teacher_student"` for standard KD-style KL(pi_ref || pi_theta).
+    """
+
     student_log_probs = F.log_softmax(student_logits, dim=-1)
+    teacher_log_probs = F.log_softmax(teacher_logits.detach(), dim=-1)
+    if direction == "student_teacher":
+        student_probs = F.softmax(student_logits, dim=-1)
+        return F.kl_div(teacher_log_probs, student_probs, reduction="batchmean", log_target=False)
+    if direction != "teacher_student":
+        raise ValueError(f"Unknown KL direction: {direction}")
     teacher_probs = F.softmax(teacher_logits.detach(), dim=-1)
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
 
