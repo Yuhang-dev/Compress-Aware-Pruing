@@ -72,4 +72,14 @@ The script intentionally skips `vllm`, `bitsandbytes`, `auto-gptq`, and `autoawq
 unless `INSTALL_HEAVY_EVAL_DEPS=1` is set, because those packages may pull large
 PyTorch CUDA component wheels and disturb the known-good torch environment.
 
+Run the Phase 0 smoke evaluation after Llama 2 is cached:
+
+```bash
+bash scripts/phase0_smoke_eval.sh
+```
+
+This writes `results/phase0_problem.csv` and
+`results/phase0_problem_summary.csv`. It is a small keyword-judge smoke test,
+not the final LlamaGuard3 evaluation.
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
