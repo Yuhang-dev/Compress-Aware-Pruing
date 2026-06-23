@@ -20,6 +20,7 @@ export TORCH_HOME="${TORCH_HOME:-$DATA_DISK/torch_cache}"
 export HF_XET_CACHE="${HF_XET_CACHE:-$HF_HOME/xet}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$DATA_DISK/pip_cache}"
 export TOKENIZERS_PARALLELISM=false
+# Disable Xet and use regular HTTP downloads. Xet can hang on this AutoDL setup.
 export HF_HUB_DISABLE_XET=1
 unset HF_XET_HIGH_PERFORMANCE
 export PYTHONPATH="$CAP_ROOT/src:${PYTHONPATH:-}"

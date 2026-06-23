@@ -57,6 +57,8 @@ To populate the remote Hugging Face cache:
 
 ```bash
 export HF_TOKEN=...  # only in the private shell, never in git or logs
+export HF_HUB_DISABLE_XET=1
+unset HF_XET_HIGH_PERFORMANCE
 python scripts/download_phase0_assets.py --config configs/base.yaml --models-only
 ```
 

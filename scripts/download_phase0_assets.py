@@ -14,6 +14,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from huggingface_hub import snapshot_download
 
 from casafety.config import load_config
@@ -38,7 +42,7 @@ def _iter_dataset_entries(data_config: dict[str, Any]) -> list[dict[str, Any]]:
 def download_models(model_ids: list[str], cache_dir: str | None) -> None:
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
     for model_id in model_ids:
-        print(f"[model] downloading {model_id}")
+        print(f"[model] downloading {model_id} with HF_HUB_DISABLE_XET={os.environ.get('HF_HUB_DISABLE_XET')}")
         snapshot_download(
             repo_id=model_id,
             repo_type="model",
@@ -56,7 +60,7 @@ def download_configured_datasets(config: dict[str, Any], cache_dir: str | None) 
         if not dataset_id:
             print(f"[dataset] skip {name}: path is not verified in config")
             continue
-        print(f"[dataset] downloading {dataset_id}")
+        print(f"[dataset] downloading {dataset_id} with HF_HUB_DISABLE_XET={os.environ.get('HF_HUB_DISABLE_XET')}")
         snapshot_download(
             repo_id=dataset_id,
             repo_type="dataset",
