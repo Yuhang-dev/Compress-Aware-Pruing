@@ -82,4 +82,10 @@ This writes `results/phase0_problem.csv` and
 `results/phase0_problem_summary.csv`. It is a small keyword-judge smoke test,
 not the final LlamaGuard3 evaluation.
 
+For a harder Phase 0 smoke set, use AdvBench:
+
+```bash
+bash scripts/phase0_advbench_smoke.sh
+```
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.

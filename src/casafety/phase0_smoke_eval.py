@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import os
+import random
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -268,12 +269,94 @@ def format_sparsity_name(value: float | str) -> str:
     return str(int(round(value * 100)))
 
 
+def load_prompts(args: argparse.Namespace) -> list[str]:
+    if args.prompt_file:
+        prompts = [
+            line.strip()
+            for line in args.prompt_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    elif args.hf_dataset:
+        prompts = load_hf_prompts(
+            dataset_id=args.hf_dataset,
+            config_name=args.hf_config,
+            split=args.hf_split,
+            prompt_column=args.prompt_column,
+            local_files_only=args.local_files_only,
+        )
+    else:
+        prompts = HARMFUL_SMOKE_PROMPTS
+
+    if args.shuffle:
+        rng = random.Random(args.seed)
+        prompts = list(prompts)
+        rng.shuffle(prompts)
+    return prompts[: args.limit] if args.limit else prompts
+
+
+def load_hf_prompts(
+    dataset_id: str,
+    config_name: str | None,
+    split: str,
+    prompt_column: str,
+    local_files_only: bool,
+) -> list[str]:
+    try:
+        from datasets import DownloadConfig, load_dataset
+    except ImportError as exc:
+        raise ImportError("Install datasets to load HF prompt datasets.") from exc
+
+    download_config = DownloadConfig(local_files_only=local_files_only)
+    if config_name:
+        dataset = load_dataset(dataset_id, config_name, split=split, download_config=download_config)
+    else:
+        dataset = load_dataset(dataset_id, split=split, download_config=download_config)
+
+    column = prompt_column
+    if column == "auto":
+        column = infer_prompt_column(dataset.column_names)
+
+    prompts = []
+    for row in dataset:
+        value = row.get(column)
+        if isinstance(value, str) and value.strip():
+            prompts.append(value.strip())
+    if not prompts:
+        raise ValueError(f"No prompts found in {dataset_id}:{split} column={column!r}")
+    print(f"[phase0] loaded {len(prompts)} prompts from {dataset_id}:{split} column={column}")
+    return prompts
+
+
+def infer_prompt_column(column_names: list[str]) -> str:
+    preferred = [
+        "goal",
+        "behavior",
+        "prompt",
+        "instruction",
+        "query",
+        "question",
+        "text",
+        "behavior_text",
+    ]
+    for column in preferred:
+        if column in column_names:
+            return column
+    raise ValueError(f"Could not infer prompt column from columns: {column_names}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--output", type=Path, default=Path("results/phase0_problem.csv"))
     parser.add_argument("--summary-output", type=Path, default=Path("results/phase0_problem_summary.csv"))
     parser.add_argument("--limit", type=int, default=len(HARMFUL_SMOKE_PROMPTS))
+    parser.add_argument("--prompt-file", type=Path)
+    parser.add_argument("--hf-dataset")
+    parser.add_argument("--hf-config")
+    parser.add_argument("--hf-split", default="train")
+    parser.add_argument("--prompt-column", default="auto")
+    parser.add_argument("--shuffle", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--calib-max-length", type=int, default=256)
     parser.add_argument("--sparsities", nargs="+", default=["0.50"])
@@ -284,7 +367,7 @@ def main() -> None:
 
     config = load_config(args.config)
     model_id = config["model"]["name_or_path"]
-    prompts = HARMFUL_SMOKE_PROMPTS[: args.limit]
+    prompts = load_prompts(args)
 
     pruners = [pruner for pruner in args.pruners if not (args.skip_wanda and pruner == "wanda")]
     conditions = [EvalCondition("dense", None, None)]
