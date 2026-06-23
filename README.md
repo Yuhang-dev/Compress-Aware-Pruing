@@ -50,4 +50,7 @@ python -m casafety.env_report --output env_report.txt
 python data/build_refusal_sft.py --config configs/base.yaml --write-manifest data/manifest.json
 ```
 
+If `python -m casafety...` cannot find the package, either run
+`source scripts/remote_bootstrap.sh` or export `PYTHONPATH=$PWD/src:$PYTHONPATH`.
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
