@@ -180,7 +180,8 @@ def apply_pruning(
 
 
 def load_model_and_tokenizer(model_id: str, local_files_only: bool):
-    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only)
+    cache_dir = resolve_cache_dir(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only, cache_dir=cache_dir)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
@@ -188,9 +189,28 @@ def load_model_and_tokenizer(model_id: str, local_files_only: bool):
         torch_dtype=torch.bfloat16,
         device_map="auto",
         local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
     model.eval()
     return model, tokenizer
+
+
+def resolve_cache_dir(model_id: str) -> str | None:
+    repo_cache_name = "models--" + model_id.replace("/", "--")
+    candidates = [
+        os.environ.get("HF_HUB_CACHE"),
+        str(Path(os.environ["HF_HOME"]) / "hub") if os.environ.get("HF_HOME") else None,
+        os.environ.get("HF_HOME"),
+    ]
+    for candidate in candidates:
+        if candidate and (Path(candidate) / repo_cache_name).exists():
+            print(f"[phase0] using cache_dir={candidate}")
+            return candidate
+    for candidate in candidates:
+        if candidate:
+            print(f"[phase0] using cache_dir={candidate}")
+            return candidate
+    return None
 
 
 def evaluate_condition(

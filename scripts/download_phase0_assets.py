@@ -79,7 +79,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    cache_dir = os.environ.get("HF_HOME")
+    cache_dir = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME")
     model_ids = [config["model"]["name_or_path"], config["model"]["judge_name_or_path"]]
     if args.include_generalization_model:
         model_ids.append("meta-llama/Llama-3.1-8B-Instruct")
