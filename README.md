@@ -66,4 +66,8 @@ After enabling GPU, run the full dependency/model download:
 bash scripts/phase0_full_download.sh
 ```
 
+The script intentionally skips `vllm`, `bitsandbytes`, `auto-gptq`, and `autoawq`
+unless `INSTALL_HEAVY_EVAL_DEPS=1` is set, because those packages may pull large
+PyTorch CUDA component wheels and disturb the known-good torch environment.
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
