@@ -53,11 +53,17 @@ python data/build_refusal_sft.py --config configs/base.yaml --write-manifest dat
 If `python -m casafety...` cannot find the package, either run
 `source scripts/remote_bootstrap.sh` or export `PYTHONPATH=$PWD/src:$PYTHONPATH`.
 
-To populate the remote Hugging Face cache before enabling GPU:
+To populate the remote Hugging Face cache:
 
 ```bash
 export HF_TOKEN=...  # only in the private shell, never in git or logs
 python scripts/download_phase0_assets.py --config configs/base.yaml --models-only
+```
+
+After enabling GPU, run the full dependency/model download:
+
+```bash
+bash scripts/phase0_full_download.sh
 ```
 
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
