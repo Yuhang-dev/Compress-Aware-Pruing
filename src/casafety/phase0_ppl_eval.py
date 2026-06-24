@@ -124,7 +124,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--model", help="Model id to evaluate; defaults to config model.default.")
     parser.add_argument("--output", type=Path, default=Path("results/phase0_wikitext_ppl_grid.csv"))
-    parser.add_argument("--dataset", default="wikitext")
+    parser.add_argument("--dataset", default="Salesforce/wikitext")
     parser.add_argument("--dataset-config", default="wikitext-2-raw-v1")
     parser.add_argument("--split", default="test")
     parser.add_argument("--seq-len", type=int, default=512)

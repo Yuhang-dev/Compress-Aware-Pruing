@@ -20,15 +20,20 @@ export PYTHONPATH="$CAP_ROOT/src:${PYTHONPATH:-}"
 
 cd "$CAP_ROOT"
 
+LOCAL_ARGS=()
+if [ "${LOCAL_FILES_ONLY:-0}" = "1" ]; then
+  LOCAL_ARGS+=(--local-files-only)
+fi
+
 /root/miniconda3/envs/pbp/bin/python -m casafety.phase0_ppl_eval \
   --config configs/base.yaml \
   --model "${MODEL:-}" \
   --output results/phase0_wikitext_ppl_grid.csv \
-  --dataset wikitext \
+  --dataset Salesforce/wikitext \
   --dataset-config wikitext-2-raw-v1 \
   --split test \
   --seq-len "${SEQ_LEN:-512}" \
   --limit "${LIMIT:-64}" \
-  --local-files-only \
   --sparsities 0.5 0.6 0.7 \
-  --pruners magnitude wanda
+  --pruners magnitude wanda \
+  "${LOCAL_ARGS[@]}"
