@@ -88,4 +88,10 @@ For a harder Phase 0 smoke set, use AdvBench:
 bash scripts/phase0_advbench_smoke.sh
 ```
 
+After Llama Guard is cached, run the judged sparsity grid:
+
+```bash
+bash scripts/phase0_advbench_guard_grid.sh
+```
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
