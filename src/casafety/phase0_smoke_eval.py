@@ -15,6 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import GenerationConfig
 
 from .config import load_config
+from .models import resolve_model_id
 from .pruners import compute_mask
 
 
@@ -433,6 +434,7 @@ def infer_prompt_column(column_names: list[str]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
+    parser.add_argument("--model", help="Model id to evaluate; defaults to config model.default.")
     parser.add_argument("--output", type=Path, default=Path("results/phase0_problem.csv"))
     parser.add_argument("--summary-output", type=Path, default=Path("results/phase0_problem_summary.csv"))
     parser.add_argument("--limit", type=int, default=len(HARMFUL_SMOKE_PROMPTS))
@@ -455,7 +457,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    model_id = config["model"]["name_or_path"]
+    model_id = resolve_model_id(config, args.model)
     prompts = load_prompts(args)
 
     pruners = [pruner for pruner in args.pruners if not (args.skip_wanda and pruner == "wanda")]

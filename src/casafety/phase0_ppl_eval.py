@@ -13,6 +13,7 @@ from datasets import DownloadConfig, load_dataset
 from transformers import AutoTokenizer
 
 from .config import load_config
+from .models import resolve_model_id
 from .phase0_smoke_eval import EvalCondition, apply_pruning, load_model_and_tokenizer, resolve_cache_dir
 from .phase0_smoke_eval import format_sparsity_name, parse_sparsity
 
@@ -119,6 +120,7 @@ def build_conditions(pruners: list[str], sparsities: list[str]) -> list[EvalCond
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
+    parser.add_argument("--model", help="Model id to evaluate; defaults to config model.default.")
     parser.add_argument("--output", type=Path, default=Path("results/phase0_wikitext_ppl_grid.csv"))
     parser.add_argument("--dataset", default="wikitext")
     parser.add_argument("--dataset-config", default="wikitext-2-raw-v1")
@@ -132,7 +134,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    model_id = config["model"]["name_or_path"]
+    model_id = resolve_model_id(config, args.model)
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
         local_files_only=args.local_files_only,

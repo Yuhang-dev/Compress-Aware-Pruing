@@ -21,6 +21,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from huggingface_hub import snapshot_download
 
 from casafety.config import load_config
+from casafety.models import candidate_model_ids, resolve_model_id
 
 
 DEFAULT_MODELS = [
@@ -48,7 +49,6 @@ def download_models(model_ids: list[str], cache_dir: str | None) -> None:
             repo_type="model",
             cache_dir=cache_dir,
             token=token,
-            resume_download=True,
         )
 
 
@@ -66,7 +66,6 @@ def download_configured_datasets(config: dict[str, Any], cache_dir: str | None) 
             repo_type="dataset",
             cache_dir=cache_dir,
             token=token,
-            resume_download=True,
         )
 
 
@@ -76,13 +75,19 @@ def main() -> None:
     parser.add_argument("--models-only", action="store_true")
     parser.add_argument("--datasets-only", action="store_true")
     parser.add_argument("--include-generalization-model", action="store_true")
+    parser.add_argument("--model", help="Download one selected model id instead of all configured candidates.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     cache_dir = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME")
-    model_ids = [config["model"]["name_or_path"], config["model"]["judge_name_or_path"]]
+    if args.model:
+        model_ids = [resolve_model_id(config, args.model)]
+    else:
+        model_ids = candidate_model_ids(config)
+    model_ids.append(config["model"]["judge_name_or_path"])
     if args.include_generalization_model:
         model_ids.append("meta-llama/Llama-3.1-8B-Instruct")
+    model_ids = list(dict.fromkeys(model_ids))
 
     if not args.datasets_only:
         download_models(model_ids or DEFAULT_MODELS, cache_dir)

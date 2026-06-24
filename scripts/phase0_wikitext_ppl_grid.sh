@@ -22,6 +22,7 @@ cd "$CAP_ROOT"
 
 /root/miniconda3/envs/pbp/bin/python -m casafety.phase0_ppl_eval \
   --config configs/base.yaml \
+  --model "${MODEL:-}" \
   --output results/phase0_wikitext_ppl_grid.csv \
   --dataset wikitext \
   --dataset-config wikitext-2-raw-v1 \

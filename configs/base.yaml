@@ -11,7 +11,20 @@ environment:
   pip_cache_dir: /root/autodl-tmp/pip_cache
 
 model:
-  name_or_path: meta-llama/Llama-2-7b-chat-hf
+  default: meta-llama/Llama-2-7b-chat-hf
+  candidates:
+    - id: meta-llama/Llama-2-7b-chat-hf
+      role: llama2_overaligned_reference
+      license: Llama 2 Community License
+      note: Refusal-direction and brittleness reference carrier; Phase-0 showed it may lack an iso-utility safety-collapse window at moderate pruning.
+    - id: Qwen/Qwen2.5-7B-Instruct
+      role: qwen_7b_primary_candidate
+      license: Apache-2.0
+      note: Verified HF repo; Llama-style decoder with RoPE, SwiGLU, RMSNorm, and Attention QKV bias.
+    - id: Qwen/Qwen2.5-3B-Instruct
+      role: qwen_3b_low_redundancy_candidate
+      license: Qwen Research License
+      note: Verified HF repo; non-commercial research/evaluation license; lower redundancy may expose coherent unsafe windows.
   judge_name_or_path: meta-llama/Llama-Guard-3-8B
   dtype: bfloat16
   max_seq_len: 2048

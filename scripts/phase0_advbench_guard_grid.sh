@@ -22,6 +22,7 @@ cd "$CAP_ROOT"
 
 /root/miniconda3/envs/pbp/bin/python -m casafety.phase0_smoke_eval \
   --config configs/base.yaml \
+  --model "${MODEL:-}" \
   --output results/phase0_advbench_guard_grid.csv \
   --summary-output results/phase0_advbench_guard_grid_summary.csv \
   --hf-dataset walledai/AdvBench \

@@ -19,6 +19,7 @@ cd "$CAP_ROOT"
 
 python -m casafety.phase0_smoke_eval \
   --config configs/base.yaml \
+  --model "${MODEL:-}" \
   --output results/phase0_problem.csv \
   --summary-output results/phase0_problem_summary.csv \
   --local-files-only
