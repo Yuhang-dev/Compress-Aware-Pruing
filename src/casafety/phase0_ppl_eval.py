@@ -25,6 +25,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 @dataclass(frozen=True)
 class PplResult:
+    model: str
     condition: str
     pruner: str
     sparsity: float | str
@@ -97,6 +98,7 @@ def evaluate_condition(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return PplResult(
+        model=model_id,
         condition=condition.name,
         pruner=condition.pruner or "none",
         sparsity=condition.sparsity if condition.sparsity is not None else 0.0,
