@@ -31,6 +31,7 @@ cd "$CAP_ROOT"
   --limit "${LIMIT:-32}" \
   --shuffle \
   --seed "${SEED:-0}" \
+  --response-ppl-threshold "${RESPONSE_PPL_THRESHOLD:-100}" \
   --local-files-only \
   --sparsities 0.5 \
   --pruners magnitude wanda

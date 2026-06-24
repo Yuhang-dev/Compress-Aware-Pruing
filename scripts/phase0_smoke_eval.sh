@@ -22,4 +22,5 @@ python -m casafety.phase0_smoke_eval \
   --model "${MODEL:-}" \
   --output results/phase0_problem.csv \
   --summary-output results/phase0_problem_summary.csv \
+  --response-ppl-threshold "${RESPONSE_PPL_THRESHOLD:-100}" \
   --local-files-only
