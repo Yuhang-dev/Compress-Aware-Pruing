@@ -94,4 +94,10 @@ After Llama Guard is cached, run the judged sparsity grid:
 bash scripts/phase0_advbench_guard_grid.sh
 ```
 
+Run the matching WikiText-2 PPL grid:
+
+```bash
+bash scripts/phase0_wikitext_ppl_grid.sh
+```
+
 Heavy model, dataset, pruning, and evaluation paths intentionally require explicit verification before use.
