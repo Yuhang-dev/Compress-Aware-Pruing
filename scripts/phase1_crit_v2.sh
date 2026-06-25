@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+OUTPUT_DIR="${OUTPUT_DIR:-results/phase1_v2}"
 TARGET_SUFFIXES="${TARGET_SUFFIXES:-o_proj down_proj}"
 P_SAFE="${P_SAFE:-0.01 0.02 0.03}"
 P_UTIL="${P_UTIL:-0.01 0.03 0.05}"
@@ -26,6 +27,7 @@ STRIDE="${STRIDE:-512}"
 SAMPLE_WINDOWS="${SAMPLE_WINDOWS:-128}"
 SEED="${SEED:-0}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
+PPL_WINDOW_INDEX_FILE="${PPL_WINDOW_INDEX_FILE:-results/phase1_v2/ppl_windows_wikitext2_seed${SEED}.json}"
 
 ABLATION_ARGS=()
 if [[ "$RUN_ABLATION" == "1" ]]; then
@@ -35,7 +37,7 @@ if [[ "$RUN_ABLATION" == "1" ]]; then
     --ppl-context-len "$CONTEXT_LEN"
     --ppl-stride "$STRIDE"
     --ppl-sample-windows "$SAMPLE_WINDOWS"
-    --ppl-window-index-file "results/phase1_v2/ppl_windows_wikitext2_seed${SEED}.json"
+    --ppl-window-index-file "$PPL_WINDOW_INDEX_FILE"
   )
   if [[ "$RUN_PPL_MATCHED_RANDOM" == "1" ]]; then
     ABLATION_ARGS+=(
@@ -79,7 +81,7 @@ python -m casafety.crit_selection_v2 \
   --harmful-limit "$SAFE_LIMIT" \
   --utility-limit "$UTILITY_LIMIT" \
   --seed "$SEED" \
-  --output-dir results/phase1_v2 \
+  --output-dir "$OUTPUT_DIR" \
   "${UTILITY_ARGS[@]}" \
   "${ABLATION_ARGS[@]}" \
   "${LOCAL_ARGS[@]}"
