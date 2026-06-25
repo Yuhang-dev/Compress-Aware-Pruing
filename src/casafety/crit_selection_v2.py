@@ -229,10 +229,14 @@ def score_tensors(weight: torch.Tensor, grad: torch.Tensor, eps: float) -> dict[
     grad_f = grad.detach().float()
     snip = (weight_f * grad_f).abs()
     abs_w = weight_f.abs()
+    row_mean_abs_w = abs_w.mean(dim=1, keepdim=True).clamp_min(eps)
+    # Half-normalized SNIP keeps some weight-scale signal without making score order
+    # identical to either SNIP or pure gradient under per-row ranking.
+    half_norm = snip / torch.sqrt(abs_w.clamp_min(eps) * row_mean_abs_w)
     return {
         "snip": snip,
         "grad": grad_f.abs(),
-        "norm_snip": snip / abs_w.clamp_min(eps),
+        "norm_snip": half_norm,
     }
 
 
