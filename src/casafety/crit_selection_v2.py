@@ -281,60 +281,63 @@ def select_module_candidates(
     score_type: str,
     module: str,
     eps: float,
+    selectors: set[str],
 ) -> dict[str, dict[str, object]]:
     candidates: dict[str, dict[str, object]] = {}
     safe_masks = {p: per_row_top_mask(safe, p) for p in p_safe_values}
-    util_masks = {p: per_row_top_mask(util, p) for p in p_util_values}
+    if "wei_setdiff" in selectors:
+        util_masks = {p: per_row_top_mask(util, p) for p in p_util_values}
+        for p_safe, safe_mask in safe_masks.items():
+            for p_util, util_mask in util_masks.items():
+                mask = safe_mask & ~util_mask
+                name = f"wei_setdiff__score-{score_type}__ps-{p_safe:g}__pu-{p_util:g}"
+                candidates[name] = {
+                    "selector": "wei_setdiff",
+                    "score_type": score_type,
+                    "p_safe": p_safe,
+                    "p_util": p_util,
+                    "lambda": None,
+                    "module_indices": {module: mask_to_flat_indices(mask)},
+                }
 
-    for p_safe, safe_mask in safe_masks.items():
-        for p_util, util_mask in util_masks.items():
-            mask = safe_mask & ~util_mask
-            name = f"wei_setdiff__score-{score_type}__ps-{p_safe:g}__pu-{p_util:g}"
+    if "ratio" in selectors:
+        for p_safe, safe_mask in safe_masks.items():
+            count_per_row = max(1, int(round(safe.shape[1] * p_safe)))
+            ratio = safe / util.clamp_min(eps)
+            ratio = ratio.masked_fill(~safe_mask, float("-inf"))
+            idx = torch.topk(ratio, k=count_per_row, dim=1, largest=True).indices
+            mask = torch.zeros_like(safe_mask)
+            mask.scatter_(1, idx, True)
+            name = f"ratio__score-{score_type}__ps-{p_safe:g}"
             candidates[name] = {
-                "selector": "wei_setdiff",
+                "selector": "ratio",
                 "score_type": score_type,
                 "p_safe": p_safe,
-                "p_util": p_util,
+                "p_util": None,
                 "lambda": None,
                 "module_indices": {module: mask_to_flat_indices(mask)},
             }
 
-    for p_safe, safe_mask in safe_masks.items():
-        count_per_row = max(1, int(round(safe.shape[1] * p_safe)))
-        ratio = safe / util.clamp_min(eps)
-        ratio = ratio.masked_fill(~safe_mask, float("-inf"))
-        idx = torch.topk(ratio, k=count_per_row, dim=1, largest=True).indices
-        mask = torch.zeros_like(safe_mask)
-        mask.scatter_(1, idx, True)
-        name = f"ratio__score-{score_type}__ps-{p_safe:g}"
-        candidates[name] = {
-            "selector": "ratio",
-            "score_type": score_type,
-            "p_safe": p_safe,
-            "p_util": None,
-            "lambda": None,
-            "module_indices": {module: mask_to_flat_indices(mask)},
-        }
-
-    safe_z = per_row_zscore(safe, eps)
-    util_z = per_row_zscore(util, eps)
-    for p_safe, safe_mask in safe_masks.items():
-        count_per_row = max(1, int(round(safe.shape[1] * p_safe)))
-        for lambda_value in lambda_values:
-            penalty = safe_z - lambda_value * util_z
-            penalty = penalty.masked_fill(~safe_mask, float("-inf"))
-            idx = torch.topk(penalty, k=count_per_row, dim=1, largest=True).indices
-            mask = torch.zeros_like(safe_mask)
-            mask.scatter_(1, idx, True)
-            name = f"penalty__score-{score_type}__ps-{p_safe:g}__lambda-{lambda_value:g}"
-            candidates[name] = {
-                "selector": "penalty",
-                "score_type": score_type,
-                "p_safe": p_safe,
-                "p_util": None,
-                "lambda": lambda_value,
-                "module_indices": {module: mask_to_flat_indices(mask)},
-            }
+    if "penalty" in selectors:
+        safe_z = per_row_zscore(safe, eps)
+        util_z = per_row_zscore(util, eps)
+        for p_safe, safe_mask in safe_masks.items():
+            count_per_row = max(1, int(round(safe.shape[1] * p_safe)))
+            for lambda_value in lambda_values:
+                penalty = safe_z - lambda_value * util_z
+                penalty = penalty.masked_fill(~safe_mask, float("-inf"))
+                idx = torch.topk(penalty, k=count_per_row, dim=1, largest=True).indices
+                mask = torch.zeros_like(safe_mask)
+                mask.scatter_(1, idx, True)
+                name = f"penalty__score-{score_type}__ps-{p_safe:g}__lambda-{lambda_value:g}"
+                candidates[name] = {
+                    "selector": "penalty",
+                    "score_type": score_type,
+                    "p_safe": p_safe,
+                    "p_util": None,
+                    "lambda": lambda_value,
+                    "module_indices": {module: mask_to_flat_indices(mask)},
+                }
     return candidates
 
 
@@ -549,6 +552,49 @@ def restore_indices(
             flat[idx] = original.to(device=flat.device, dtype=flat.dtype)
 
 
+def index_count(indices_by_name: dict[str, torch.Tensor]) -> int:
+    return int(sum(int(idx.numel()) for idx in indices_by_name.values()))
+
+
+def scaled_random_indices_like(
+    modules: list[tuple[str, nn.Linear]],
+    reference_indices: dict[str, torch.Tensor],
+    multiplier: float,
+    seed: int,
+) -> dict[str, torch.Tensor]:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    module_map = dict(modules)
+    random_indices = {}
+    for name, ref_idx in reference_indices.items():
+        numel = module_map[name].weight.numel()
+        count = min(numel, int(math.ceil(ref_idx.numel() * multiplier)))
+        random_indices[name] = random_unique_indices(numel, count, generator)
+    return random_indices
+
+
+def wanda_removed_indices(
+    modules: list[tuple[str, nn.Linear]],
+    input_norms: dict[str, torch.Tensor],
+    reference_indices: dict[str, torch.Tensor],
+    sparsity: float,
+) -> dict[str, torch.Tensor]:
+    removed = {}
+    for module_name, module in modules:
+        idx = reference_indices.get(module_name)
+        if idx is None or idx.numel() == 0:
+            continue
+        input_norm = input_norms.get(module_name)
+        if input_norm is None:
+            input_norm = torch.ones(module.weight.shape[1])
+        stats = {"input_norm": input_norm.to(module.weight.device)}
+        with torch.inference_mode():
+            mask = compute_mask(module.weight.detach(), stats, sparsity, "wanda")
+        flat_mask = mask.detach().flatten().to(device="cpu", dtype=torch.bool)
+        idx = idx.to(torch.int64).cpu()
+        removed[module_name] = idx[~flat_mask[idx]]
+    return removed
+
+
 def generate_ablation_rows(
     model,
     tokenizer,
@@ -591,6 +637,45 @@ def generate_ablation_rows(
     return rows
 
 
+def run_condition_ablation(
+    model,
+    tokenizer,
+    modules: list[tuple[str, nn.Linear]],
+    condition_indices: list[tuple[str, str, dict[str, torch.Tensor] | None]],
+    prompts: list[str],
+    ppl_input_ids: torch.Tensor,
+    ppl_windows,
+    max_new_tokens: int,
+    response_ppl_threshold: float,
+) -> tuple[list[dict[str, object]], dict[tuple[str, str], tuple[float, float, int]]]:
+    modules_by_name = dict(modules)
+    rows = []
+    ppl_by_key = {}
+
+    for candidate_name, condition, indices in condition_indices:
+        originals = {}
+        if indices is not None:
+            originals = zero_indices_in_place(modules_by_name, indices)
+        try:
+            print(f"[crit-v2] ablation candidate={candidate_name} condition={condition}")
+            rows.extend(
+                generate_ablation_rows(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompts=prompts,
+                    candidate=candidate_name,
+                    condition=condition,
+                    max_new_tokens=max_new_tokens,
+                    response_ppl_threshold=response_ppl_threshold,
+                )
+            )
+            ppl_by_key[(candidate_name, condition)] = eval_ppl_on_windows(model, ppl_input_ids, ppl_windows)
+        finally:
+            if indices is not None:
+                restore_indices(modules_by_name, indices, originals)
+    return rows, ppl_by_key
+
+
 def run_ablation(
     model,
     tokenizer,
@@ -602,39 +687,39 @@ def run_ablation(
     ppl_windows,
     max_new_tokens: int,
     response_ppl_threshold: float,
+    extra_conditions_by_candidate: dict[str, list[tuple[str, dict[str, torch.Tensor]]]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[tuple[str, str], tuple[float, float, int]]]:
-    modules_by_name = dict(modules)
-    rows = []
-    ppl_by_key = {}
+    condition_indices = []
 
-    for candidate_name in selected_candidate_names:
+    candidate_names = list(selected_candidate_names)
+    if extra_conditions_by_candidate:
+        for candidate_name in extra_conditions_by_candidate:
+            if candidate_name not in candidate_names:
+                candidate_names.append(candidate_name)
+
+    for candidate_name in candidate_names:
         payload = candidates[candidate_name]
-        for condition, indices in (
-            ("no_ablation", None),
-            ("crit_zero", payload["crit_indices"]),
-            ("random_zero", payload["random_indices"]),
-        ):
-            originals = {}
-            if indices is not None:
-                originals = zero_indices_in_place(modules_by_name, indices)
-            try:
-                print(f"[crit-v2] ablation candidate={candidate_name} condition={condition}")
-                rows.extend(
-                    generate_ablation_rows(
-                        model=model,
-                        tokenizer=tokenizer,
-                        prompts=prompts,
-                        candidate=candidate_name,
-                        condition=condition,
-                        max_new_tokens=max_new_tokens,
-                        response_ppl_threshold=response_ppl_threshold,
-                    )
-                )
-                ppl_by_key[(candidate_name, condition)] = eval_ppl_on_windows(model, ppl_input_ids, ppl_windows)
-            finally:
-                if indices is not None:
-                    restore_indices(modules_by_name, indices, originals)
-    return rows, ppl_by_key
+        if candidate_name in selected_candidate_names:
+            for condition, indices in (
+                ("no_ablation", None),
+                ("crit_zero", payload["crit_indices"]),
+                ("random_zero", payload["random_indices"]),
+            ):
+                condition_indices.append((candidate_name, condition, indices))
+        if extra_conditions_by_candidate:
+            for condition, indices in extra_conditions_by_candidate.get(candidate_name, []):
+                condition_indices.append((candidate_name, condition, indices))
+    return run_condition_ablation(
+        model=model,
+        tokenizer=tokenizer,
+        modules=modules,
+        condition_indices=condition_indices,
+        prompts=prompts,
+        ppl_input_ids=ppl_input_ids,
+        ppl_windows=ppl_windows,
+        max_new_tokens=max_new_tokens,
+        response_ppl_threshold=response_ppl_threshold,
+    )
 
 
 def summarize_ablation(rows: list[dict[str, object]], ppl_by_key: dict[tuple[str, str], tuple[float, float, int]]) -> pd.DataFrame:
@@ -687,6 +772,204 @@ def summarize_ablation(rows: list[dict[str, object]], ppl_by_key: dict[tuple[str
     return summary
 
 
+def find_ppl_matched_random_conditions(
+    model,
+    modules: list[tuple[str, nn.Linear]],
+    candidates: dict[str, dict[str, object]],
+    selected_candidate_names: list[str],
+    ppl_input_ids: torch.Tensor,
+    ppl_windows,
+    ppl_by_key: dict[tuple[str, str], tuple[float, float, int]],
+    multipliers: list[float],
+    seed: int,
+    max_candidates: int,
+) -> tuple[dict[str, list[tuple[str, dict[str, torch.Tensor]]]], pd.DataFrame]:
+    modules_by_name = dict(modules)
+    records = []
+    conditions: dict[str, list[tuple[str, dict[str, torch.Tensor]]]] = {}
+    selected = selected_candidate_names if max_candidates <= 0 else selected_candidate_names[:max_candidates]
+    for candidate_pos, candidate_name in enumerate(selected):
+        target = ppl_by_key.get((candidate_name, "crit_zero"))
+        if target is None:
+            continue
+        target_ppl = float(target[1])
+        payload = candidates[candidate_name]
+        crit_count = index_count(payload["crit_indices"])
+        best: dict[str, object] | None = None
+        best_indices: dict[str, torch.Tensor] | None = None
+        for multiplier_pos, multiplier in enumerate(multipliers):
+            indices = scaled_random_indices_like(
+                modules=modules,
+                reference_indices=payload["crit_indices"],
+                multiplier=multiplier,
+                seed=seed + 104729 * (candidate_pos + 1) + 1009 * (multiplier_pos + 1),
+            )
+            originals = zero_indices_in_place(modules_by_name, indices)
+            try:
+                mean_nll, ppl, tokens = eval_ppl_on_windows(model, ppl_input_ids, ppl_windows)
+            finally:
+                restore_indices(modules_by_name, indices, originals)
+            record = {
+                "candidate": candidate_name,
+                "condition": f"random_ppl_matched_x{multiplier:g}",
+                "random_multiplier": multiplier,
+                "crit_count": crit_count,
+                "random_count": index_count(indices),
+                "target_crit_ppl_v2": target_ppl,
+                "random_mean_nll_v2": mean_nll,
+                "random_ppl_v2": ppl,
+                "random_tokens_v2": tokens,
+                "abs_ppl_gap": abs(float(ppl) - target_ppl),
+                "selected": False,
+            }
+            records.append(record)
+            if best is None or float(record["abs_ppl_gap"]) < float(best["abs_ppl_gap"]):
+                best = record
+                best_indices = indices
+        if best is not None and best_indices is not None:
+            best["selected"] = True
+            conditions[candidate_name] = [(str(best["condition"]), best_indices)]
+    return conditions, pd.DataFrame(records)
+
+
+def build_wanda_removed_probe_conditions(
+    modules: list[tuple[str, nn.Linear]],
+    input_norms: dict[str, torch.Tensor],
+    candidates: dict[str, dict[str, object]],
+    selected_candidate_names: list[str],
+    sparsity: float,
+) -> tuple[dict[str, list[tuple[str, dict[str, torch.Tensor]]]], pd.DataFrame]:
+    records = []
+    conditions: dict[str, list[tuple[str, dict[str, torch.Tensor]]]] = {}
+    condition = f"wanda_removed_{sparsity:g}_zero"
+    for candidate_name in selected_candidate_names:
+        payload = candidates[candidate_name]
+        removed = wanda_removed_indices(
+            modules=modules,
+            input_norms=input_norms,
+            reference_indices=payload["crit_indices"],
+            sparsity=sparsity,
+        )
+        crit_count = index_count(payload["crit_indices"])
+        removed_count = index_count(removed)
+        records.append(
+            {
+                "candidate": candidate_name,
+                "condition": condition,
+                "sparsity": sparsity,
+                "crit_count": crit_count,
+                "removed_count": removed_count,
+                "removed_fraction_of_crit": removed_count / crit_count if crit_count else float("nan"),
+            }
+        )
+        conditions[candidate_name] = [(condition, removed)]
+    return conditions, pd.DataFrame(records)
+
+
+def ablation_condition_lookup(summary: pd.DataFrame) -> dict[tuple[str, str], pd.Series]:
+    return {(str(row["candidate"]), str(row["condition"])): row for _, row in summary.iterrows()}
+
+
+def build_probe_report(probe_df: pd.DataFrame, ablation_summary: pd.DataFrame) -> pd.DataFrame:
+    if probe_df.empty:
+        return probe_df
+    lookup = ablation_condition_lookup(ablation_summary)
+    rows = []
+    for _, probe in probe_df.iterrows():
+        row = dict(probe)
+        summary_row = lookup.get((str(probe["candidate"]), str(probe["condition"])))
+        if summary_row is not None:
+            for column in (
+                "prompts",
+                "refusal_rate",
+                "asr",
+                "raw_unsafe_rate",
+                "coherent_rate",
+                "utility_mean_nll_v2",
+                "utility_ppl_v2",
+                "utility_tokens_v2",
+            ):
+                row[column] = summary_row.get(column)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_frontier_table(ablation_summary: pd.DataFrame, selection_summary: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    selection_by_candidate = {str(row["candidate"]): row for _, row in selection_summary.iterrows()}
+    for candidate, sub in ablation_summary.groupby("candidate"):
+        by_condition = {str(row["condition"]): row for _, row in sub.iterrows()}
+        if {"no_ablation", "crit_zero", "random_zero"}.issubset(by_condition):
+            base = by_condition["no_ablation"]
+            crit = by_condition["crit_zero"]
+            random = by_condition["random_zero"]
+            base_ppl = float(base.get("utility_ppl_v2", float("nan")))
+            crit_ppl = float(crit.get("utility_ppl_v2", float("nan")))
+            row = {
+                "candidate": candidate,
+                "base_asr": float(base.get("asr", float("nan"))),
+                "crit_asr": float(crit.get("asr", float("nan"))),
+                "random_asr": float(random.get("asr", float("nan"))),
+                "asr_delta": float(crit.get("asr", float("nan"))) - float(base.get("asr", float("nan"))),
+                "specificity": float(crit.get("asr", float("nan"))) - float(random.get("asr", float("nan"))),
+                "base_ppl_v2": base_ppl,
+                "crit_ppl_v2": crit_ppl,
+                "random_ppl_v2": float(random.get("utility_ppl_v2", float("nan"))),
+                "ppl_delta_pct": (crit_ppl - base_ppl) / base_ppl if base_ppl and math.isfinite(base_ppl) else float("nan"),
+            }
+            selection = selection_by_candidate.get(str(candidate))
+            if selection is not None:
+                for column in (
+                    "selector",
+                    "score_type",
+                    "p_safe",
+                    "p_util",
+                    "lambda",
+                    "crit_count",
+                    "target_weights",
+                    "crit_ratio",
+                    "wanda_survival_0.45",
+                    "wanda_survival_0.5",
+                    "input_norm_percentile_p50_module_mean",
+                    "magnitude_percentile_p50_module_mean",
+                    "wanda_percentile_p50_module_mean",
+                ):
+                    row[column] = selection.get(column)
+            rows.append(row)
+    frontier = pd.DataFrame(rows)
+    if frontier.empty:
+        return frontier
+    pareto = []
+    for idx, row in frontier.iterrows():
+        row_ppl = float(row["ppl_delta_pct"])
+        row_spec = float(row["specificity"])
+        dominated = False
+        for other_idx, other in frontier.iterrows():
+            if idx == other_idx:
+                continue
+            other_ppl = float(other["ppl_delta_pct"])
+            other_spec = float(other["specificity"])
+            if (
+                math.isfinite(other_ppl)
+                and math.isfinite(other_spec)
+                and other_ppl <= row_ppl
+                and other_spec >= row_spec
+                and (other_ppl < row_ppl or other_spec > row_spec)
+            ):
+                dominated = True
+                break
+        pareto.append(not dominated)
+    frontier["pareto_frontier"] = pareto
+    frontier["utility_tier"] = frontier["ppl_delta_pct"].apply(
+        lambda value: "strong" if value <= 0.05 else ("usable" if value <= 0.10 else "diagnostic_only")
+    )
+    frontier = frontier.sort_values(
+        by=["pareto_frontier", "ppl_delta_pct", "specificity"],
+        ascending=[False, True, False],
+    )
+    return frontier
+
+
 def candidate_sort_key(row: pd.Series) -> tuple[float, float, float]:
     ratio = float(row.get("crit_ratio", 0.0))
     in_range = 0.002 <= ratio <= 0.03
@@ -704,6 +987,8 @@ def main() -> None:
     parser.add_argument("--p-safe", nargs="+", type=float, default=[0.01, 0.02, 0.03])
     parser.add_argument("--p-util", nargs="+", type=float, default=[0.01, 0.03, 0.05])
     parser.add_argument("--lambda-values", nargs="+", type=float, default=[0.5, 1.0, 2.0])
+    parser.add_argument("--score-types", nargs="+", choices=SCORE_TYPES, default=list(SCORE_TYPES))
+    parser.add_argument("--selectors", nargs="+", choices=["wei_setdiff", "ratio", "penalty"], default=["wei_setdiff", "ratio", "penalty"])
     parser.add_argument("--eps", type=float, default=1e-12)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=1024)
@@ -731,6 +1016,11 @@ def main() -> None:
     parser.add_argument("--ablation-harmful-limit", type=int, default=64)
     parser.add_argument("--ablation-harmful-offset", type=int, default=128)
     parser.add_argument("--ablation-max-new-tokens", type=int, default=256)
+    parser.add_argument("--run-ppl-matched-random", action="store_true")
+    parser.add_argument("--ppl-matched-random-candidates", type=int, default=3)
+    parser.add_argument("--ppl-matched-random-multipliers", nargs="+", type=float, default=[1.0, 2.0, 4.0, 8.0])
+    parser.add_argument("--run-wanda-removed-probe", action="store_true")
+    parser.add_argument("--wanda-removed-sparsity", type=float, default=0.50)
     parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
     parser.add_argument("--judge", choices=["keyword", "llamaguard"], default="llamaguard")
     parser.add_argument("--judge-model")
@@ -779,7 +1069,7 @@ def main() -> None:
             continue
         safe_scores = score_tensors(module.weight.detach().cpu(), safe_grads[name], args.eps)
         util_scores = score_tensors(module.weight.detach().cpu(), module.weight.grad.detach().cpu(), args.eps)
-        for score_type in SCORE_TYPES:
+        for score_type in args.score_types:
             module_candidates = select_module_candidates(
                 safe=safe_scores[score_type],
                 util=util_scores[score_type],
@@ -789,6 +1079,7 @@ def main() -> None:
                 score_type=score_type,
                 module=name,
                 eps=args.eps,
+                selectors=set(args.selectors),
             )
             merge_candidate_maps(candidates, module_candidates)
         del safe_scores, util_scores, safe_grads[name]
@@ -876,7 +1167,64 @@ def main() -> None:
             ppl_windows=ppl_windows,
             max_new_tokens=args.ablation_max_new_tokens,
             response_ppl_threshold=args.response_ppl_threshold,
+            extra_conditions_by_candidate={},
         )
+        wanda_probe_df = pd.DataFrame()
+        if args.run_wanda_removed_probe:
+            print(f"[crit-v2] building Wanda-removed probe at sparsity={args.wanda_removed_sparsity:g}")
+            wanda_conditions, wanda_probe_df = build_wanda_removed_probe_conditions(
+                modules=modules,
+                input_norms=input_norms,
+                candidates=candidates,
+                selected_candidate_names=selected_names,
+                sparsity=args.wanda_removed_sparsity,
+            )
+            extra_rows, extra_ppl = run_ablation(
+                model=model,
+                tokenizer=tokenizer,
+                modules=modules,
+                candidates=candidates,
+                selected_candidate_names=[],
+                prompts=ablation_prompts,
+                ppl_input_ids=ppl_input_ids,
+                ppl_windows=ppl_windows,
+                max_new_tokens=args.ablation_max_new_tokens,
+                response_ppl_threshold=args.response_ppl_threshold,
+                extra_conditions_by_candidate=wanda_conditions,
+            )
+            ablation_rows.extend(extra_rows)
+            ppl_by_key.update(extra_ppl)
+
+        ppl_matched_df = pd.DataFrame()
+        if args.run_ppl_matched_random:
+            print("[crit-v2] searching PPL-matched random controls")
+            matched_conditions, ppl_matched_df = find_ppl_matched_random_conditions(
+                model=model,
+                modules=modules,
+                candidates=candidates,
+                selected_candidate_names=selected_names,
+                ppl_input_ids=ppl_input_ids,
+                ppl_windows=ppl_windows,
+                ppl_by_key=ppl_by_key,
+                multipliers=args.ppl_matched_random_multipliers,
+                seed=args.seed,
+                max_candidates=args.ppl_matched_random_candidates,
+            )
+            extra_rows, extra_ppl = run_ablation(
+                model=model,
+                tokenizer=tokenizer,
+                modules=modules,
+                candidates=candidates,
+                selected_candidate_names=[],
+                prompts=ablation_prompts,
+                ppl_input_ids=ppl_input_ids,
+                ppl_windows=ppl_windows,
+                max_new_tokens=args.ablation_max_new_tokens,
+                response_ppl_threshold=args.response_ppl_threshold,
+                extra_conditions_by_candidate=matched_conditions,
+            )
+            ablation_rows.extend(extra_rows)
+            ppl_by_key.update(extra_ppl)
 
         del model
         gc.collect()
@@ -899,12 +1247,24 @@ def main() -> None:
                 row["unsafe"] = row["attack_success"]
 
         ablation_summary = summarize_ablation(ablation_rows, ppl_by_key)
+        frontier = build_frontier_table(ablation_summary, summary)
         ablation_path = args.output_dir / "crit_ablation_v2.csv"
         ablation_details_path = args.output_dir / "crit_ablation_v2_details.csv"
+        frontier_path = args.output_dir / "crit_ablation_v2_frontier.csv"
         ablation_summary.to_csv(ablation_path, index=False)
         pd.DataFrame(ablation_rows).to_csv(ablation_details_path, index=False)
+        frontier.to_csv(frontier_path, index=False)
         print(f"[crit-v2] wrote {ablation_path}")
         print(f"[crit-v2] wrote {ablation_details_path}")
+        print(f"[crit-v2] wrote {frontier_path}")
+        if not ppl_matched_df.empty:
+            ppl_matched_path = args.output_dir / "crit_ppl_matched_random_v2.csv"
+            build_probe_report(ppl_matched_df, ablation_summary).to_csv(ppl_matched_path, index=False)
+            print(f"[crit-v2] wrote {ppl_matched_path}")
+        if not wanda_probe_df.empty:
+            wanda_probe_path = args.output_dir / "crit_wanda_removed_probe_v2.csv"
+            build_probe_report(wanda_probe_df, ablation_summary).to_csv(wanda_probe_path, index=False)
+            print(f"[crit-v2] wrote {wanda_probe_path}")
     else:
         del model
         gc.collect()
