@@ -228,11 +228,11 @@ def score_tensors(weight: torch.Tensor, grad: torch.Tensor, eps: float) -> dict[
     weight_f = weight.detach().float()
     grad_f = grad.detach().float()
     snip = (weight_f * grad_f).abs()
-    row_mean_abs_w = weight_f.abs().mean(dim=1, keepdim=True).clamp_min(eps)
+    abs_w = weight_f.abs()
     return {
         "snip": snip,
         "grad": grad_f.abs(),
-        "norm_snip": snip / row_mean_abs_w,
+        "norm_snip": snip / abs_w.clamp_min(eps),
     }
 
 
