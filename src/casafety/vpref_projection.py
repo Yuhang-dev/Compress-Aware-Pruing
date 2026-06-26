@@ -290,6 +290,13 @@ def fixed_random_unit(dim: int, seed: int) -> torch.Tensor:
     return vector / vector.norm().clamp_min(1e-12)
 
 
+def unit_or_zero(vector: torch.Tensor) -> torch.Tensor:
+    norm = vector.norm()
+    if float(norm) <= 1e-12:
+        return torch.zeros_like(vector)
+    return (vector / norm).contiguous()
+
+
 def fixed_random_basis(dim: int, columns: int, generator: torch.Generator) -> torch.Tensor:
     matrix = torch.randn(dim, columns, generator=generator)
     q, _r = torch.linalg.qr(matrix, mode="reduced")
@@ -299,6 +306,153 @@ def fixed_random_basis(dim: int, columns: int, generator: torch.Generator) -> to
 def centered_unit(last: torch.Tensor, benign_mean: torch.Tensor) -> torch.Tensor:
     centered = (last - benign_mean).float()
     return centered / centered.norm().clamp_min(1e-12)
+
+
+QUESTION_PREFIXES = (
+    "what",
+    "how",
+    "why",
+    "when",
+    "where",
+    "who",
+    "which",
+    "can",
+    "could",
+    "would",
+    "should",
+    "is",
+    "are",
+    "do",
+    "does",
+)
+
+TECH_KEYWORDS = (
+    "algorithm",
+    "calculate",
+    "code",
+    "computer",
+    "data",
+    "debug",
+    "equation",
+    "function",
+    "math",
+    "program",
+    "python",
+    "science",
+    "software",
+    "statistic",
+)
+
+
+def benign_contrast_candidates(
+    benign_prompts: list[tuple[int, str]],
+    min_group: int,
+) -> list[dict[str, object]]:
+    rows = [(prompt_id, prompt.strip()) for prompt_id, prompt in benign_prompts if prompt.strip()]
+    candidates: list[dict[str, object]] = []
+    if len(rows) >= 2 * min_group:
+        ordered = sorted(rows, key=lambda item: len(item[1].split()))
+        half = len(ordered) // 2
+        short_ids = [prompt_id for prompt_id, _prompt in ordered[:half]]
+        long_ids = [prompt_id for prompt_id, _prompt in ordered[-half:]]
+        candidates.append(
+            {
+                "name": "ctrl_length_long_vs_short",
+                "positive_label": "long",
+                "negative_label": "short",
+                "pos_ids": long_ids,
+                "neg_ids": short_ids,
+            }
+        )
+
+    question_ids = []
+    non_question_ids = []
+    for prompt_id, prompt in rows:
+        lowered = prompt.lower().strip()
+        first = lowered.split(maxsplit=1)[0].strip(",:;.?!") if lowered else ""
+        is_question = "?" in prompt or first in QUESTION_PREFIXES
+        (question_ids if is_question else non_question_ids).append(prompt_id)
+    if len(question_ids) >= min_group and len(non_question_ids) >= min_group:
+        candidates.append(
+            {
+                "name": "ctrl_question_vs_instruction",
+                "positive_label": "question",
+                "negative_label": "instruction",
+                "pos_ids": question_ids,
+                "neg_ids": non_question_ids,
+            }
+        )
+
+    tech_ids = []
+    non_tech_ids = []
+    for prompt_id, prompt in rows:
+        lowered = prompt.lower()
+        is_tech = any(keyword in lowered for keyword in TECH_KEYWORDS)
+        (tech_ids if is_tech else non_tech_ids).append(prompt_id)
+    if len(tech_ids) >= min_group and len(non_tech_ids) >= min_group:
+        candidates.append(
+            {
+                "name": "ctrl_technical_vs_general",
+                "positive_label": "technical",
+                "negative_label": "general",
+                "pos_ids": tech_ids,
+                "neg_ids": non_tech_ids,
+            }
+        )
+    return candidates
+
+
+def build_control_directions(
+    *,
+    benign_acts: dict[int, dict[int, dict[str, torch.Tensor]]],
+    benign_prompts: list[tuple[int, str]],
+    layers: list[int],
+    target_probe_cv_by_layer: dict[int, float],
+    max_controls: int,
+    min_group: int,
+) -> dict[int, list[dict[str, object]]]:
+    candidates = benign_contrast_candidates(benign_prompts, min_group)
+    controls_by_layer: dict[int, list[dict[str, object]]] = {}
+    for layer in layers:
+        layer_rows: list[dict[str, object]] = []
+        target_cv = target_probe_cv_by_layer.get(layer, float("nan"))
+        for candidate in candidates:
+            pos_ids = [prompt_id for prompt_id in candidate["pos_ids"] if prompt_id in benign_acts[layer]]
+            neg_ids = [prompt_id for prompt_id in candidate["neg_ids"] if prompt_id in benign_acts[layer]]
+            if len(pos_ids) < min_group or len(neg_ids) < min_group:
+                continue
+            pos = stack_last(benign_acts[layer], pos_ids)
+            neg = stack_last(benign_acts[layer], neg_ids)
+            direction = unit_or_zero(pos.mean(dim=0) - neg.mean(dim=0))
+            if float(direction.norm()) <= 1e-12:
+                continue
+            pos_scores = [float(value) for value in pos.matmul(direction).tolist()]
+            neg_scores = [float(value) for value in neg.matmul(direction).tolist()]
+            probe_cv_acc = threshold_cv_accuracy(pos_scores, neg_scores)
+            layer_rows.append(
+                {
+                    "name": candidate["name"],
+                    "direction": direction,
+                    "positive_label": candidate["positive_label"],
+                    "negative_label": candidate["negative_label"],
+                    "n_positive": len(pos_ids),
+                    "n_negative": len(neg_ids),
+                    "probe_cv_acc": probe_cv_acc,
+                    "target_probe_cv_acc": target_cv,
+                    "probe_cv_abs_gap": abs(probe_cv_acc - target_cv)
+                    if math.isfinite(probe_cv_acc) and math.isfinite(target_cv)
+                    else float("nan"),
+                    "pooled_gap": pooled_gap(pos_scores, neg_scores),
+                }
+            )
+        layer_rows.sort(
+            key=lambda row: (
+                row["probe_cv_abs_gap"] if math.isfinite(float(row["probe_cv_abs_gap"])) else float("inf"),
+                -float(row["probe_cv_acc"]) if math.isfinite(float(row["probe_cv_acc"])) else float("inf"),
+            )
+        )
+        controls_by_layer[layer] = layer_rows[:max_controls]
+    return controls_by_layer
 
 
 def project_rows(
@@ -317,6 +471,7 @@ def project_rows(
     layers: list[int],
     kr_values: list[int],
     random_by_layer: dict[int, torch.Tensor],
+    controls_by_layer: dict[int, list[dict[str, object]]],
     outcomes: dict[int, dict[str, object]],
     row_start: int,
 ) -> list[dict[str, object]]:
@@ -369,6 +524,10 @@ def project_rows(
                     "attack_success": outcome.get("attack_success", ""),
                     "judge": outcome.get("judge", ""),
                 }
+                for control_idx, control in enumerate(controls_by_layer.get(layer, []), start=1):
+                    ctrl_direction = control["direction"].float()
+                    row[f"s_ctrl{control_idx}"] = float(last.dot(ctrl_direction))
+                    row[f"s_ctrl{control_idx}_cos"] = float(unit.dot(ctrl_direction))
                 rows.append(row)
                 row_id += 1
     return rows
@@ -744,10 +903,14 @@ def build_specificity_table(
     details: pd.DataFrame,
     vector_cache: dict[tuple[str, str, int, int], dict[str, object]],
     dense_payloads: dict[tuple[int, int], dict[str, object]],
+    controls_by_layer: dict[int, list[dict[str, object]]],
+    harm_probe_cv_by_layer: dict[int, float],
     projection_layers: list[int],
     kr_values: list[int],
     n_null: int,
     seed: int,
+    allowed_pairs: set[tuple[int, int]] | None,
+    control_collapse_ratio: float,
 ) -> pd.DataFrame:
     rows = []
     configs = [config for config in details["config"].drop_duplicates().tolist()]
@@ -759,118 +922,281 @@ def build_specificity_table(
             config_outcomes = cache_outcomes(vector_cache, config_name, layer)
             dense_outcomes = cache_outcomes(vector_cache, "dense", layer)
             for kr in kr_values:
+                if allowed_pairs is not None and (layer, kr) not in allowed_pairs:
+                    continue
                 payload = dense_payloads[(layer, kr)]
-                basis = payload["basis"].float()
                 r_hat = payload["r_hat"].float()
+                direction_specs: list[dict[str, object]] = [
+                    {
+                        "direction": "harm",
+                        "direction_kind": "harm_detection",
+                        "control_name": "",
+                        "vector": r_hat,
+                        "probe_cv_acc": harm_probe_cv_by_layer.get(layer, float("nan")),
+                        "target_probe_cv_acc": harm_probe_cv_by_layer.get(layer, float("nan")),
+                        "probe_cv_abs_gap": 0.0,
+                    }
+                ]
+                for control_idx, control in enumerate(controls_by_layer.get(layer, []), start=1):
+                    direction_specs.append(
+                        {
+                            "direction": f"ctrl{control_idx}",
+                            "direction_kind": "control_concept",
+                            "control_name": control["name"],
+                            "vector": control["direction"].float(),
+                            "probe_cv_acc": control["probe_cv_acc"],
+                            "target_probe_cv_acc": control["target_probe_cv_acc"],
+                            "probe_cv_abs_gap": control["probe_cv_abs_gap"],
+                            "n_control_positive": control["n_positive"],
+                            "n_control_negative": control["n_negative"],
+                        }
+                    )
+
                 for variant in ("raw", "cos"):
-                    if kr == 1:
-                        target_values = cache_values_for_direction(vector_cache, config_name, layer, r_hat, variant=variant)
-                        dense_target_values = cache_values_for_direction(vector_cache, "dense", layer, r_hat, variant=variant)
-                        metric_type = "direction"
-                    else:
-                        target_values = cache_values_for_subspace(vector_cache, config_name, layer, basis, variant=variant)
-                        dense_target_values = cache_values_for_subspace(vector_cache, "dense", layer, basis, variant=variant)
-                        metric_type = "subspace_energy"
-                    rhat_cliffs, n_complied, n_refused = crosssec_cliffs(target_values, config_outcomes)
-                    rhat_delta, n_flipped, n_stayed = delta_effect(
-                        target_values,
-                        dense_target_values,
+                    harm_values = cache_values_for_direction(vector_cache, config_name, layer, r_hat, variant=variant)
+                    dense_harm_values = cache_values_for_direction(vector_cache, "dense", layer, r_hat, variant=variant)
+                    harm_cliffs, _harm_complied, _harm_refused = crosssec_cliffs(harm_values, config_outcomes)
+                    harm_delta, _harm_flipped, _harm_stayed = delta_effect(
+                        harm_values,
+                        dense_harm_values,
                         config_outcomes,
                         dense_outcomes,
                     )
+                    harm_delta_abs = abs(harm_delta) if math.isfinite(harm_delta) else float("nan")
 
-                    null_cliffs_abs = []
-                    null_delta_abs = []
-                    for _idx in range(n_null):
-                        if kr == 1:
-                            random_direction = fixed_random_unit(dim, int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item()))
-                            null_values = cache_values_for_direction(
-                                vector_cache, config_name, layer, random_direction, variant=variant
-                            )
-                            dense_null_values = cache_values_for_direction(
-                                vector_cache, "dense", layer, random_direction, variant=variant
-                            )
-                        else:
-                            random_basis = fixed_random_basis(dim, kr, generator)
-                            null_values = cache_values_for_subspace(
-                                vector_cache, config_name, layer, random_basis, variant=variant
-                            )
-                            dense_null_values = cache_values_for_subspace(
-                                vector_cache, "dense", layer, random_basis, variant=variant
-                            )
-                        null_cliffs, _nc, _nr = crosssec_cliffs(null_values, config_outcomes)
-                        null_delta, _nf, _ns = delta_effect(null_values, dense_null_values, config_outcomes, dense_outcomes)
-                        if math.isfinite(null_cliffs):
-                            null_cliffs_abs.append(abs(null_cliffs))
-                        if math.isfinite(null_delta):
-                            null_delta_abs.append(abs(null_delta))
+                    for spec in direction_specs:
+                        vector = spec["vector"].float()
+                        target_values = cache_values_for_direction(vector_cache, config_name, layer, vector, variant=variant)
+                        dense_target_values = cache_values_for_direction(vector_cache, "dense", layer, vector, variant=variant)
+                        cliffs, n_complied, n_refused = crosssec_cliffs(target_values, config_outcomes)
+                        delta, n_flipped, n_stayed = delta_effect(
+                            target_values,
+                            dense_target_values,
+                            config_outcomes,
+                            dense_outcomes,
+                        )
+                        cliffs_abs = abs(cliffs) if math.isfinite(cliffs) else float("nan")
+                        delta_abs = abs(delta) if math.isfinite(delta) else float("nan")
+                        null_cliffs_abs = []
+                        null_delta_abs = []
+                        if spec["direction"] == "harm":
+                            for _idx in range(n_null):
+                                random_direction = fixed_random_unit(
+                                    dim,
+                                    int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item()),
+                                )
+                                null_values = cache_values_for_direction(
+                                    vector_cache, config_name, layer, random_direction, variant=variant
+                                )
+                                dense_null_values = cache_values_for_direction(
+                                    vector_cache, "dense", layer, random_direction, variant=variant
+                                )
+                                null_cliffs, _nc, _nr = crosssec_cliffs(null_values, config_outcomes)
+                                null_delta, _nf, _ns = delta_effect(
+                                    null_values, dense_null_values, config_outcomes, dense_outcomes
+                                )
+                                if math.isfinite(null_cliffs):
+                                    null_cliffs_abs.append(abs(null_cliffs))
+                                if math.isfinite(null_delta):
+                                    null_delta_abs.append(abs(null_delta))
 
-                    rhat_cliffs_abs = abs(rhat_cliffs) if math.isfinite(rhat_cliffs) else float("nan")
-                    rhat_delta_abs = abs(rhat_delta) if math.isfinite(rhat_delta) else float("nan")
-                    null_crosssec_p95 = percentile_95(null_cliffs_abs)
-                    null_delta_p95 = percentile_95(null_delta_abs)
-                    rows.append(
-                        {
+                        null_crosssec_p95 = percentile_95(null_cliffs_abs)
+                        null_delta_p95 = percentile_95(null_delta_abs)
+                        comparable_to_harm = bool(
+                            spec["direction"] != "harm"
+                            and math.isfinite(delta)
+                            and math.isfinite(harm_delta)
+                            and delta < 0
+                            and harm_delta < 0
+                            and delta_abs >= control_collapse_ratio * harm_delta_abs
+                        )
+                        row = {
                             "config": config_name,
                             "layer": layer,
                             "k_r": kr,
+                            "direction": spec["direction"],
+                            "direction_kind": spec["direction_kind"],
+                            "control_name": spec["control_name"],
                             "variant": variant,
-                            "metric_type": metric_type,
-                            "rhat_crosssec_cliffs": rhat_cliffs,
-                            "rhat_crosssec_cliffs_abs": rhat_cliffs_abs,
-                            "rhat_flip_delta_effect": rhat_delta,
-                            "rhat_flip_delta_effect_abs": rhat_delta_abs,
+                            "metric_type": "direction",
+                            "crosssec_cliffs": cliffs,
+                            "crosssec_cliffs_abs": cliffs_abs,
+                            "flip_delta_effect": delta,
+                            "flip_delta_effect_abs": delta_abs,
+                            "probe_cv_acc": spec["probe_cv_acc"],
+                            "target_probe_cv_acc": spec["target_probe_cv_acc"],
+                            "probe_cv_abs_gap": spec["probe_cv_abs_gap"],
+                            "n_control_positive": spec.get("n_control_positive", ""),
+                            "n_control_negative": spec.get("n_control_negative", ""),
                             "null_crosssec_mean": mean_or_nan(null_cliffs_abs),
                             "null_crosssec_p95": null_crosssec_p95,
                             "null_delta_mean": mean_or_nan(null_delta_abs),
                             "null_delta_p95": null_delta_p95,
                             "null_mean": mean_or_nan(null_delta_abs),
                             "null_p95": null_delta_p95,
-                            "rhat_percentile_crosssec": empirical_percentile(rhat_cliffs_abs, null_cliffs_abs),
-                            "rhat_p_crosssec": empirical_pvalue(rhat_cliffs_abs, null_cliffs_abs),
-                            "rhat_percentile_delta": empirical_percentile(rhat_delta_abs, null_delta_abs),
-                            "rhat_p_delta": empirical_pvalue(rhat_delta_abs, null_delta_abs),
-                            "n_null": n_null,
+                            "percentile_crosssec": empirical_percentile(cliffs_abs, null_cliffs_abs),
+                            "p_value_crosssec": empirical_pvalue(cliffs_abs, null_cliffs_abs),
+                            "percentile_delta": empirical_percentile(delta_abs, null_delta_abs),
+                            "p_value_delta": empirical_pvalue(delta_abs, null_delta_abs),
+                            "rhat_crosssec_cliffs": cliffs if spec["direction"] == "harm" else "",
+                            "rhat_crosssec_cliffs_abs": cliffs_abs if spec["direction"] == "harm" else "",
+                            "rhat_flip_delta_effect": delta if spec["direction"] == "harm" else "",
+                            "rhat_flip_delta_effect_abs": delta_abs if spec["direction"] == "harm" else "",
+                            "rhat_percentile_crosssec": empirical_percentile(cliffs_abs, null_cliffs_abs)
+                            if spec["direction"] == "harm"
+                            else "",
+                            "rhat_p_crosssec": empirical_pvalue(cliffs_abs, null_cliffs_abs)
+                            if spec["direction"] == "harm"
+                            else "",
+                            "rhat_percentile_delta": empirical_percentile(delta_abs, null_delta_abs)
+                            if spec["direction"] == "harm"
+                            else "",
+                            "rhat_p_delta": empirical_pvalue(delta_abs, null_delta_abs)
+                            if spec["direction"] == "harm"
+                            else "",
+                            "n_null": n_null if spec["direction"] == "harm" else 0,
                             "n_null_crosssec_effects": len(null_cliffs_abs),
                             "n_null_delta_effects": len(null_delta_abs),
                             "n_complied": n_complied,
                             "n_refused": n_refused,
                             "n_flipped_from_dense_refused": n_flipped,
                             "n_stayed_from_dense_refused": n_stayed,
+                            "harm_flip_delta_effect": harm_delta,
+                            "harm_flip_delta_effect_abs": harm_delta_abs,
+                            "control_comparable_to_harm": comparable_to_harm,
                             "delta_specificity_pass95": bool(
-                                math.isfinite(rhat_delta_abs)
+                                spec["direction"] == "harm"
+                                and math.isfinite(delta_abs)
                                 and math.isfinite(null_delta_p95)
-                                and rhat_delta_abs > null_delta_p95
+                                and delta_abs > null_delta_p95
                             ),
                         }
-                    )
-    return pd.DataFrame(rows)
+                        rows.append(row)
+    if rows:
+        return pd.DataFrame(rows)
+    return pd.DataFrame(
+        columns=[
+            "config",
+            "layer",
+            "k_r",
+            "direction",
+            "direction_kind",
+            "control_name",
+            "variant",
+            "metric_type",
+            "crosssec_cliffs",
+            "crosssec_cliffs_abs",
+            "flip_delta_effect",
+            "flip_delta_effect_abs",
+            "probe_cv_acc",
+            "target_probe_cv_acc",
+            "probe_cv_abs_gap",
+            "n_control_positive",
+            "n_control_negative",
+            "null_crosssec_mean",
+            "null_crosssec_p95",
+            "null_delta_mean",
+            "null_delta_p95",
+            "null_mean",
+            "null_p95",
+            "percentile_crosssec",
+            "p_value_crosssec",
+            "percentile_delta",
+            "p_value_delta",
+            "rhat_crosssec_cliffs",
+            "rhat_crosssec_cliffs_abs",
+            "rhat_flip_delta_effect",
+            "rhat_flip_delta_effect_abs",
+            "rhat_percentile_crosssec",
+            "rhat_p_crosssec",
+            "rhat_percentile_delta",
+            "rhat_p_delta",
+            "n_null",
+            "n_null_crosssec_effects",
+            "n_null_delta_effects",
+            "n_complied",
+            "n_refused",
+            "n_flipped_from_dense_refused",
+            "n_stayed_from_dense_refused",
+            "harm_flip_delta_effect",
+            "harm_flip_delta_effect_abs",
+            "control_comparable_to_harm",
+            "delta_specificity_pass95",
+        ]
+    )
 
 
-def build_specificity_decision(specificity: pd.DataFrame, validation: pd.DataFrame) -> dict[str, object]:
-    primary = specificity[
-        specificity["config"].isin(["wanda_45", "wanda_50"])
-        & specificity["variant"].eq("cos")
-        & specificity["metric_type"].eq("direction")
-        & specificity["k_r"].eq(1)
-    ]
-    specificity_pass = bool(len(primary) >= 2 and primary["delta_specificity_pass95"].all())
-    validation_pass = False
-    if not validation.empty:
-        induce = validation[validation["mode"].eq("induce")]
-        suppress = validation[validation["mode"].str.startswith("suppress", na=False)]
-        validation_pass = bool(
-            (not induce.empty and induce["induce_delta"].astype(float).max() > 0)
-            and (not suppress.empty and suppress["suppress_delta"].astype(float).max() > 0)
-        )
-    if specificity_pass and validation_pass:
-        interpretation = "refusal-direction-specific collapse"
+def validation_pass_pairs(validation: pd.DataFrame, min_delta: float) -> set[tuple[int, int]]:
+    if validation.empty:
+        return set()
+    frame = validation.copy()
+    frame["induce_delta_numeric"] = pd.to_numeric(frame["induce_delta"], errors="coerce")
+    frame["suppress_delta_numeric"] = pd.to_numeric(frame["suppress_delta"], errors="coerce")
+    pairs = set()
+    for (layer, kr), group in frame.groupby(["layer", "k_r"], dropna=False):
+        if int(layer) < 0 or int(kr) < 0:
+            continue
+        induce_max = group[group["mode"].eq("induce")]["induce_delta_numeric"].max()
+        suppress_max = group[group["mode"].str.startswith("suppress", na=False)]["suppress_delta_numeric"].max()
+        if pd.notna(induce_max) and pd.notna(suppress_max) and induce_max >= min_delta and suppress_max >= min_delta:
+            pairs.add((int(layer), int(kr)))
+    return pairs
+
+
+def build_specificity_decision(
+    specificity: pd.DataFrame,
+    validation: pd.DataFrame,
+    *,
+    validation_min_delta: float,
+) -> dict[str, object]:
+    pass_pairs = validation_pass_pairs(validation, validation_min_delta)
+    validation_pass = bool(pass_pairs)
+    target_configs = ["wanda_45", "wanda_50"]
+    pair_config_pass: dict[tuple[int, int], dict[str, bool]] = {}
+    random_floor_pass_by_config: dict[str, bool] = {}
+
+    if not specificity.empty:
+        primary = specificity[
+            specificity["config"].isin(target_configs)
+            & specificity["variant"].eq("cos")
+            & specificity["metric_type"].eq("direction")
+        ]
+        for (config, layer, kr), group in primary.groupby(["config", "layer", "k_r"], dropna=False):
+            harm = group[group["direction"].eq("harm")]
+            controls = group[group["direction_kind"].eq("control_concept")]
+            if harm.empty:
+                continue
+            harm_row = harm.iloc[0]
+            harm_collapses = bool(
+                float(harm_row["crosssec_cliffs"]) < 0 and float(harm_row["flip_delta_effect"]) < 0
+            )
+            controls_available = not controls.empty
+            controls_ok = controls_available and not controls["control_comparable_to_harm"].astype(bool).any()
+            pair = (int(layer), int(kr))
+            pair_config_pass.setdefault(pair, {})[str(config)] = bool(harm_collapses and controls_ok)
+            random_floor_pass_by_config[str(config)] = bool(
+                random_floor_pass_by_config.get(str(config), False)
+                or bool(harm_row.get("delta_specificity_pass95", False))
+            )
+
+    control_specificity_pass = any(
+        all(config_passes.get(config, False) for config in target_configs)
+        for config_passes in pair_config_pass.values()
+    )
+    random_floor_pass = all(random_floor_pass_by_config.get(config, False) for config in target_configs)
+    decision_pass = validation_pass and control_specificity_pass
+    if decision_pass:
+        interpretation = "harm-detection-specific collapse under compression"
     else:
-        interpretation = "broad distributed representation shift; refusal readout remains the decision point"
+        interpretation = (
+            "compression broadly perturbs representations; the harm-detection readout remains the decision point"
+        )
     return {
-        "specificity_pass": specificity_pass,
         "validation_pass": validation_pass,
-        "decision_pass": specificity_pass and validation_pass,
+        "validation_pass_pairs": [{"layer": layer, "k_r": kr} for layer, kr in sorted(pass_pairs)],
+        "control_specificity_pass": control_specificity_pass,
+        "random_floor_pass": random_floor_pass,
+        "decision_pass": decision_pass,
         "interpretation": interpretation,
     }
 
@@ -1162,6 +1488,28 @@ def run_validation(
     return pd.DataFrame(rows)
 
 
+def control_metadata_table(controls_by_layer: dict[int, list[dict[str, object]]]) -> pd.DataFrame:
+    rows = []
+    for layer, controls in sorted(controls_by_layer.items()):
+        for control_idx, control in enumerate(controls, start=1):
+            rows.append(
+                {
+                    "layer": layer,
+                    "direction": f"ctrl{control_idx}",
+                    "control_name": control["name"],
+                    "positive_label": control["positive_label"],
+                    "negative_label": control["negative_label"],
+                    "n_positive": control["n_positive"],
+                    "n_negative": control["n_negative"],
+                    "probe_cv_acc": control["probe_cv_acc"],
+                    "target_probe_cv_acc": control["target_probe_cv_acc"],
+                    "probe_cv_abs_gap": control["probe_cv_abs_gap"],
+                    "pooled_gap": control["pooled_gap"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def write_csv_text_free(df: pd.DataFrame, path: Path) -> None:
     text_free_assert(df, path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1254,6 +1602,20 @@ def run(args: argparse.Namespace) -> None:
     write_csv_text_free(separation_df, output_dir / "vpref_layer_separation.csv")
 
     dense_payloads = {key: value for key, value in dense_payloads_all.items() if key[0] in projection_layers}
+    harm_probe_cv_by_layer = {
+        int(row["layer"]): float(row["probe_cv_acc"])
+        for _, row in separation_df[separation_df["chosen"].astype(bool)].iterrows()
+    }
+    controls_by_layer = build_control_directions(
+        benign_acts=benign_dir_acts,
+        benign_prompts=benign_dir,
+        layers=projection_layers,
+        target_probe_cv_by_layer=harm_probe_cv_by_layer,
+        max_controls=args.control_directions,
+        min_group=args.control_min_group,
+    )
+    control_metadata = control_metadata_table(controls_by_layer)
+    write_csv_text_free(control_metadata, output_dir / "vpref_control_directions.csv")
     random_by_layer = {
         layer: fixed_random_unit(int(dense_payloads[(layer, 1)]["r_hat"].numel()), args.seed + 7919 + layer)
         for layer in projection_layers
@@ -1359,6 +1721,7 @@ def run(args: argparse.Namespace) -> None:
                 layers=projection_layers,
                 kr_values=args.kr,
                 random_by_layer=random_by_layer,
+                controls_by_layer=controls_by_layer,
                 outcomes=outcomes if prompt_set == "harm_eval" else {},
                 row_start=row_start,
             )
@@ -1371,15 +1734,6 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError("row_id/order invariant failed in vpref projection details.")
 
     summary = build_summary(details)
-    specificity = build_specificity_table(
-        details=details,
-        vector_cache=vector_cache,
-        dense_payloads=dense_payloads,
-        projection_layers=projection_layers,
-        kr_values=args.kr,
-        n_null=args.null_directions,
-        seed=args.seed,
-    )
     details_path = output_dir / "vpref_projection_details.csv"
     projection_path = output_dir / "vpref_projection.csv"
     summary_path = output_dir / "vpref_projection_summary.csv"
@@ -1391,7 +1745,6 @@ def run(args: argparse.Namespace) -> None:
     # Spec-compatible alias; same text-free per-prompt table for downstream scripts.
     write_csv_text_free(details, projection_path)
     write_csv_text_free(summary, summary_path)
-    write_csv_text_free(specificity, specificity_path)
 
     validation = run_validation(
         args=args,
@@ -1404,12 +1757,38 @@ def run(args: argparse.Namespace) -> None:
     )
     if not validation.empty:
         write_csv_text_free(validation, validation_path)
-    decision = build_specificity_decision(specificity, validation)
+    allowed_pairs = validation_pass_pairs(validation, args.validation_min_delta) if args.run_validation else None
+    specificity = build_specificity_table(
+        details=details,
+        vector_cache=vector_cache,
+        dense_payloads=dense_payloads,
+        controls_by_layer=controls_by_layer,
+        harm_probe_cv_by_layer=harm_probe_cv_by_layer,
+        projection_layers=projection_layers,
+        kr_values=args.kr,
+        n_null=args.null_directions,
+        seed=args.seed,
+        allowed_pairs=allowed_pairs,
+        control_collapse_ratio=args.control_collapse_ratio,
+    )
+    write_csv_text_free(specificity, specificity_path)
+    decision = build_specificity_decision(
+        specificity,
+        validation,
+        validation_min_delta=args.validation_min_delta,
+    )
     decision_path.write_text(json.dumps(decision, indent=2), encoding="utf-8")
     print(f"[vpref-proj] decision {json.dumps(decision, ensure_ascii=False)}")
     manifest["null_directions"] = args.null_directions
     manifest["run_validation"] = bool(args.run_validation)
     manifest["validation_alphas"] = args.validation_alphas
+    manifest["validation_min_delta"] = args.validation_min_delta
+    manifest["control_directions"] = args.control_directions
+    manifest["control_min_group"] = args.control_min_group
+    manifest["control_collapse_ratio"] = args.control_collapse_ratio
+    manifest["specificity_allowed_pairs"] = (
+        [{"layer": layer, "k_r": kr} for layer, kr in sorted(allowed_pairs)] if allowed_pairs is not None else "all"
+    )
     manifest["decision"] = decision
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"[vpref-proj] wrote {manifest_path}")
@@ -1432,10 +1811,14 @@ def main() -> None:
     parser.add_argument("--benign-eval-offset", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=1024)
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--null-directions", type=int, default=200)
+    parser.add_argument("--null-directions", type=int, default=50)
     parser.add_argument("--run-validation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--validation-alphas", nargs="+", type=float, default=[2.0, 4.0, 8.0])
     parser.add_argument("--validation-max-new-tokens", type=int, default=128)
+    parser.add_argument("--validation-min-delta", type=float, default=0.1)
+    parser.add_argument("--control-directions", type=int, default=2)
+    parser.add_argument("--control-min-group", type=int, default=16)
+    parser.add_argument("--control-collapse-ratio", type=float, default=0.5)
     parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
     parser.add_argument("--calib-max-length", type=int, default=1024)
     parser.add_argument("--harmful-file", type=Path)
