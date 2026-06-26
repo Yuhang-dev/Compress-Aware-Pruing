@@ -13,6 +13,10 @@ HARM_EVAL_OFFSET="${HARM_EVAL_OFFSET:-0}"
 BENIGN_EVAL_OFFSET="${BENIGN_EVAL_OFFSET:-0}"
 MAX_LENGTH="${MAX_LENGTH:-1024}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
+NULL_DIRECTIONS="${NULL_DIRECTIONS:-200}"
+RUN_VALIDATION="${RUN_VALIDATION:-1}"
+VALIDATION_ALPHAS="${VALIDATION_ALPHAS:-2 4 8}"
+VALIDATION_MAX_NEW_TOKENS="${VALIDATION_MAX_NEW_TOKENS:-128}"
 PROJECTION_NEIGHBOR_RADIUS="${PROJECTION_NEIGHBOR_RADIUS:-0}"
 HARMFUL_DATASET="${HARMFUL_DATASET:-walledai/AdvBench}"
 HARMFUL_CONFIG="${HARMFUL_CONFIG:-}"
@@ -50,6 +54,13 @@ if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
   LOCAL_ARGS=(--local-files-only)
 fi
 
+VALIDATION_ARGS=(--validation-alphas $VALIDATION_ALPHAS)
+if [[ "$RUN_VALIDATION" == "1" ]]; then
+  VALIDATION_ARGS+=(--run-validation)
+else
+  VALIDATION_ARGS+=(--no-run-validation)
+fi
+
 python -m casafety.vpref_projection \
   --config configs/base.yaml \
   --model "$MODEL" \
@@ -64,7 +75,10 @@ python -m casafety.vpref_projection \
   --benign-eval-offset "$BENIGN_EVAL_OFFSET" \
   --max-length "$MAX_LENGTH" \
   --max-new-tokens "$MAX_NEW_TOKENS" \
+  --null-directions "$NULL_DIRECTIONS" \
+  --validation-max-new-tokens "$VALIDATION_MAX_NEW_TOKENS" \
   --projection-neighbor-radius "$PROJECTION_NEIGHBOR_RADIUS" \
   --judge "$JUDGE" \
   "${DATA_ARGS[@]}" \
+  "${VALIDATION_ARGS[@]}" \
   "${LOCAL_ARGS[@]}"
