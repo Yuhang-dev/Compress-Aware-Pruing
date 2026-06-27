@@ -202,6 +202,7 @@ def generate_with_restore_hook(
                     patched[:, -1, :] = patched[:, -1, :] + delta
                     decode_seen["value"] = 0
                 elif decode_seen["value"] < patch_decode_tokens:
+                    # model.generate uses KV cache by default, so decode steps arrive as seq_len == 1.
                     patched[:, -1, :] = patched[:, -1, :] + delta
                     decode_seen["value"] += 1
                 else:
@@ -242,13 +243,14 @@ def effective_beta(
     gamma: float,
     beta_max: float,
     gate_lo: float,
-) -> tuple[float, float, bool]:
-    gated = s0 > gate_lo
+    gate_enabled: bool,
+) -> tuple[float, float, bool, bool]:
+    gated = (s0 > gate_lo) if gate_enabled else True
     if not gated:
-        return 0.0, s0, False
+        return 0.0, s0, False, False
     if beta_mode == "fixed":
         beta = max(0.0, float(fixed_beta or 0.0))
-        return beta, s0 + beta, beta > 0
+        return beta, s0 + beta, beta > 0, True
     if beta_or_target == "tau_plus_gamma":
         target = tau + gamma
     elif beta_or_target == "dense_ref":
@@ -256,7 +258,7 @@ def effective_beta(
     else:
         raise ValueError(f"Unknown beta target {beta_or_target}")
     beta = min(max(float(target) - s0, 0.0), beta_max)
-    return beta, s0 + beta, beta > 0
+    return beta, s0 + beta, beta > 0, True
 
 
 def build_generation_rows(
@@ -275,12 +277,13 @@ def build_generation_rows(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     judge_rows = []
     detail_rows = []
+    gate_enabled = prompt_set != "harm_eval" or args.gate_harm
     for beta_mode, beta_or_target, fixed_beta in beta_specs(args.fixed_betas):
         for eval_order, (prompt_id, prompt) in enumerate(prompts):
             prompt_id = int(prompt_id)
             s0 = float(s_scores[prompt_id])
             dense_ref = dense_refs.get(prompt_id)
-            beta, s_after, steered = effective_beta(
+            beta, s_after, steered, gated_in = effective_beta(
                 beta_mode=beta_mode,
                 beta_or_target=beta_or_target,
                 fixed_beta=fixed_beta,
@@ -290,6 +293,7 @@ def build_generation_rows(
                 gamma=args.gamma,
                 beta_max=args.beta_max,
                 gate_lo=gate_lo,
+                gate_enabled=gate_enabled,
             )
             generated = generate_with_restore_hook(
                 model,
@@ -317,6 +321,8 @@ def build_generation_rows(
                 "s_after": s_after,
                 "beta_effective": beta,
                 "gate_lo": gate_lo,
+                "gate_enabled": gate_enabled,
+                "gated_in": gated_in,
                 "steered": steered,
                 "response_tokens": generated["response_tokens"],
                 "response_mean_nll": generated["response_mean_nll"],
@@ -340,7 +346,7 @@ def build_generation_rows(
     return judge_rows, detail_rows
 
 
-def judge_rows(rows: list[dict[str, object]], args: argparse.Namespace, judge_model_id: str) -> list[dict[str, object]]:
+def run_judge(rows: list[dict[str, object]], args: argparse.Namespace, judge_model_id: str) -> list[dict[str, object]]:
     if args.judge == "llamaguard":
         return judge_with_llamaguard(
             rows,
@@ -382,6 +388,8 @@ def sanitize_details(judged_rows: list[dict[str, object]]) -> pd.DataFrame:
                 "s_after": row["s_after"],
                 "beta_effective": row["beta_effective"],
                 "gate_lo": row["gate_lo"],
+                "gate_enabled": row["gate_enabled"],
+                "gated_in": row["gated_in"],
                 "steered": row["steered"],
                 "coherent": coherent,
                 "refusal_keyword_raw": bool(row["refusal_keyword_raw"]),
@@ -425,6 +433,7 @@ def summarize(details: pd.DataFrame, *, tau: float) -> pd.DataFrame:
                 "mean_s_after": mean_or_nan(group["s_after"]),
                 "mean_beta_effective": mean_or_nan(group["beta_effective"]),
                 "frac_s_after_ge_tau": float((pd.to_numeric(group["s_after"]) >= tau).mean()) if n else float("nan"),
+                "n_gated": int(group["gated_in"].astype(bool).sum()),
                 "n_steered": int(group["steered"].astype(bool).sum()),
                 "n": n,
             }
@@ -573,7 +582,7 @@ def run(args: argparse.Namespace) -> None:
             ("benign_eval", benign_eval, benign_scores),
         ):
             print(f"[restore-s] config={config_name} set={prompt_set} generating")
-            judge_rows, _detail_rows = build_generation_rows(
+            generated_rows, _detail_rows = build_generation_rows(
                 model,
                 tokenizer,
                 config_name=config_name,
@@ -586,7 +595,7 @@ def run(args: argparse.Namespace) -> None:
                 args=args,
                 r_hat=r_hat,
             )
-            all_judge_rows.extend(judge_rows)
+            all_judge_rows.extend(generated_rows)
 
         del model
         gc.collect()
@@ -594,7 +603,7 @@ def run(args: argparse.Namespace) -> None:
             torch.cuda.empty_cache()
 
     print("[restore-s] judging generated responses")
-    judged = judge_rows(all_judge_rows, args, judge_model_id)
+    judged = run_judge(all_judge_rows, args, judge_model_id)
     details = sanitize_details(judged)
     summary = summarize(details, tau=tau)
     decision = build_decision(summary, args, tau)
@@ -628,6 +637,7 @@ def main() -> None:
     parser.add_argument("--fixed-betas", nargs="+", type=float, default=[0.0, 8.0, 16.0, 24.0, 32.0])
     parser.add_argument("--patch-decode-tokens", type=int, default=6)
     parser.add_argument("--gate-std", type=float, default=3.0)
+    parser.add_argument("--gate-harm", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--direction-limit", type=int, default=256)
     parser.add_argument("--eval-limit", type=int, default=128)

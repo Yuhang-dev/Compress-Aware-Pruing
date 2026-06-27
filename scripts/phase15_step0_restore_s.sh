@@ -14,6 +14,7 @@ BETA_MAX="${BETA_MAX:-40}"
 FIXED_BETAS="${FIXED_BETAS:-0 8 16 24 32}"
 PATCH_DECODE_TOKENS="${PATCH_DECODE_TOKENS:-6}"
 GATE_STD="${GATE_STD:-3}"
+GATE_HARM="${GATE_HARM:-0}"
 SEED="${SEED:-0}"
 DIRECTION_LIMIT="${DIRECTION_LIMIT:-256}"
 EVAL_LIMIT="${EVAL_LIMIT:-128}"
@@ -72,6 +73,9 @@ if [[ -n "$JUDGE_MODEL" ]]; then
 fi
 if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
   OPTIONAL_ARGS+=(--local-files-only)
+fi
+if [[ "$GATE_HARM" == "1" ]]; then
+  OPTIONAL_ARGS+=(--gate-harm)
 fi
 
 python -m casafety.step0_restore_s \
