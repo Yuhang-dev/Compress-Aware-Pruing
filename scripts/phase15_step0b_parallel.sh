@@ -20,6 +20,7 @@ LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 PREPARE_INPUTS="${PREPARE_INPUTS:-1}"
 WAIT_AND_MERGE="${WAIT_AND_MERGE:-0}"
 MERGED_OUTPUT_DIR="${MERGED_OUTPUT_DIR:-results/phase15_step0b_parallel_merged}"
+STEP0B_SHARDS="${STEP0B_SHARDS:-lg28_k1 lg28_k4 lg242832_k1 lg242832_k4}"
 
 mkdir -p "$SHARD_ROOT" "$LOG_DIR"
 
@@ -95,10 +96,28 @@ run_shard() {
   DIRS+=("$out_dir")
 }
 
-run_shard "28" "1" "lg28_k1"
-run_shard "28" "4" "lg28_k4"
-run_shard "24,28,32" "1" "lg242832_k1"
-run_shard "24,28,32" "4" "lg242832_k4"
+should_run_shard() {
+  local tag="$1"
+  [[ " $STEP0B_SHARDS " == *" $tag "* ]]
+}
+
+if should_run_shard "lg28_k1"; then
+  run_shard "28" "1" "lg28_k1"
+fi
+if should_run_shard "lg28_k4"; then
+  run_shard "28" "4" "lg28_k4"
+fi
+if should_run_shard "lg242832_k1"; then
+  run_shard "24,28,32" "1" "lg242832_k1"
+fi
+if should_run_shard "lg242832_k4"; then
+  run_shard "24,28,32" "4" "lg242832_k4"
+fi
+
+if [[ "${#PIDS[@]}" == "0" ]]; then
+  echo "[step0b-parallel] no shards selected by STEP0B_SHARDS=$STEP0B_SHARDS" >&2
+  exit 1
+fi
 
 echo "[step0b-parallel] pids: ${PIDS[*]}"
 echo "[step0b-parallel] logs: $LOG_DIR/lg*.log"

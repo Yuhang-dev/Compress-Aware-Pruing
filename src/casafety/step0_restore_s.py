@@ -1724,6 +1724,7 @@ def run_step0b(args: argparse.Namespace) -> None:
     layer_groups = parse_layer_groups(args.step0b_layer_groups)
     measure_layers = tuple(parse_int_list(args.step0b_measure_layers))
     kr_values = sorted(set(args.step0b_kr))
+    payload_kr_values = sorted(set(kr_values).union({1}))
     windows = parse_window_values(args.step0b_windows)
     patch_layers = sorted({layer for group in layer_groups for layer in group})
     needed_layers = sorted(set(patch_layers).union(measure_layers))
@@ -1733,7 +1734,7 @@ def run_step0b(args: argparse.Namespace) -> None:
         raw_path.unlink()
     if args.step0b_prepare_only:
         print(
-            f"[restore-s] Step0b prepare-only model={model_id} layers={needed_layers} kr={kr_values}",
+            f"[restore-s] Step0b prepare-only model={model_id} layers={needed_layers} kr={payload_kr_values}",
             flush=True,
         )
         model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
@@ -1745,7 +1746,7 @@ def run_step0b(args: argparse.Namespace) -> None:
             harm_dir=harm_dir,
             benign_dir=benign_dir,
             layers=needed_layers,
-            kr_values=kr_values,
+            kr_values=payload_kr_values,
             artifact_dir=args.artifact_dir,
             max_length=args.max_length,
             output_dir=args.output_dir,
@@ -1782,7 +1783,7 @@ def run_step0b(args: argparse.Namespace) -> None:
                 harm_dir=harm_dir,
                 benign_dir=benign_dir,
                 layers=needed_layers,
-                kr_values=kr_values,
+                kr_values=payload_kr_values,
                 artifact_dir=args.artifact_dir,
                 max_length=args.max_length,
                 output_dir=args.output_dir,
@@ -1807,10 +1808,10 @@ def run_step0b(args: argparse.Namespace) -> None:
                 layers=needed_layers,
             )
             dense_coeffs_by_set["harm_eval"] = coeff_vectors(
-                dense_vectors_by_set["harm_eval"], payloads, layers=needed_layers, kr_values=kr_values
+                dense_vectors_by_set["harm_eval"], payloads, layers=needed_layers, kr_values=payload_kr_values
             )
             dense_coeffs_by_set["benign_eval"] = coeff_vectors(
-                dense_vectors_by_set["benign_eval"], payloads, layers=needed_layers, kr_values=kr_values
+                dense_vectors_by_set["benign_eval"], payloads, layers=needed_layers, kr_values=payload_kr_values
             )
 
         pruned_layers = apply_pruning(model, tokenizer, "wanda", sparsity, args.calib_max_length)
