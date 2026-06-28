@@ -1455,6 +1455,83 @@ def run_step0b_from_raw(args: argparse.Namespace) -> None:
     )
 
 
+def run_step0b_merge(args: argparse.Namespace) -> None:
+    if not args.step0b_merge_dirs:
+        raise ValueError("Pass at least one directory to --step0b-merge-dirs.")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    summary_frames = []
+    detail_frames = []
+    raw_output = args.output_dir / "step0b_raw_rows_merged.jsonl"
+    if raw_output.exists():
+        raw_output.unlink()
+    raw_count = 0
+    sources = []
+    for directory in args.step0b_merge_dirs:
+        directory = Path(directory)
+        sources.append(str(directory))
+        summary_path = directory / "step0b_restore_s.csv"
+        details_path = directory / "step0b_restore_s_details.csv"
+        raw_path = directory / "step0b_raw_rows.jsonl"
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Missing shard summary: {summary_path}")
+        summary_frames.append(pd.read_csv(summary_path))
+        if details_path.exists():
+            detail_frames.append(pd.read_csv(details_path))
+        if raw_path.exists():
+            with raw_path.open("r", encoding="utf-8") as src, raw_output.open("a", encoding="utf-8") as dst:
+                for line in src:
+                    if line.strip():
+                        dst.write(line)
+                        raw_count += 1
+
+    summary = pd.concat(summary_frames, ignore_index=True)
+    summary_key_cols = [
+        "config",
+        "set",
+        "layer_group",
+        "window",
+        "k_r",
+        "steering_mode",
+        "target_kind",
+        "beta_value",
+    ]
+    summary = summary.drop_duplicates(subset=[col for col in summary_key_cols if col in summary.columns])
+    summary = summary.sort_values([col for col in summary_key_cols if col in summary.columns])
+    write_csv_text_free(summary, args.output_dir / "step0b_restore_s.csv")
+
+    details_rows = 0
+    if detail_frames:
+        details = pd.concat(detail_frames, ignore_index=True)
+        detail_key_cols = summary_key_cols + ["prompt_id", "eval_order"]
+        details = details.drop_duplicates(subset=[col for col in detail_key_cols if col in details.columns])
+        details = details.sort_values([col for col in detail_key_cols if col in details.columns])
+        details_rows = len(details)
+        write_csv_text_free(details, args.output_dir / "step0b_restore_s_details.csv")
+
+    measure_layers = tuple(parse_int_list(args.step0b_measure_layers))
+    decision = build_step0b_decision(
+        summary,
+        args,
+        measure_layers=measure_layers,
+        tau_by_layer=tau_by_layer_from_step0b_summary(summary, measure_layers),
+    )
+    decision.update(
+        {
+            "source": "merged_shards",
+            "shards": sources,
+            "summary_rows": int(len(summary)),
+            "details_rows": int(details_rows),
+            "raw_rows_merged": int(raw_count),
+            "raw_rows": str(raw_output) if raw_count else "",
+        }
+    )
+    (args.output_dir / "step0b_restore_s_decision.json").write_text(
+        json.dumps(decision, indent=2), encoding="utf-8"
+    )
+    print(f"[restore-s] merged {len(sources)} shards into {args.output_dir}", flush=True)
+    print(f"[restore-s] Step0b merged decision {json.dumps(decision, ensure_ascii=False)}", flush=True)
+
+
 def build_decision(summary: pd.DataFrame, args: argparse.Namespace, tau: float) -> dict[str, object]:
     configs = sorted(summary["config"].unique().tolist()) if not summary.empty else []
     config_results = {}
@@ -1654,6 +1731,31 @@ def run_step0b(args: argparse.Namespace) -> None:
     raw_path = resolve_step0b_raw_rows_path(args)
     if raw_path.exists():
         raw_path.unlink()
+    if args.step0b_prepare_only:
+        print(
+            f"[restore-s] Step0b prepare-only model={model_id} layers={needed_layers} kr={kr_values}",
+            flush=True,
+        )
+        model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
+        model.eval()
+        ensure_step0b_direction_inputs(
+            model,
+            tokenizer,
+            model_id=model_id,
+            harm_dir=harm_dir,
+            benign_dir=benign_dir,
+            layers=needed_layers,
+            kr_values=kr_values,
+            artifact_dir=args.artifact_dir,
+            max_length=args.max_length,
+            output_dir=args.output_dir,
+        )
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[restore-s] Step0b prepare-only complete", flush=True)
+        return
     print(
         f"[restore-s] Step0b model={model_id} patch_layers={patch_layers} "
         f"measure_layers={list(measure_layers)} kr={kr_values} windows={[window_label(w) for w in windows]} "
@@ -1842,9 +1944,13 @@ def main() -> None:
     parser.add_argument("--step0b-progress-every", type=int, default=50)
     parser.add_argument("--step0b-raw-rows", type=Path)
     parser.add_argument("--step0b-judge-from-raw", action="store_true")
+    parser.add_argument("--step0b-prepare-only", action="store_true")
+    parser.add_argument("--step0b-merge-dirs", nargs="+", type=Path)
     parser.add_argument("--local-files-only", action="store_true")
     args = parser.parse_args()
-    if args.step0b:
+    if args.step0b_merge_dirs:
+        run_step0b_merge(args)
+    elif args.step0b:
         run_step0b(args)
     else:
         run(args)
