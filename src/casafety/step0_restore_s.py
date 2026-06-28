@@ -679,8 +679,11 @@ def beta_specs(fixed_betas: list[float]) -> list[tuple[str, str, float | None]]:
 
 def step0b_candidate_specs(args: argparse.Namespace) -> list[tuple[str, str, float]]:
     specs: list[tuple[str, str, float]] = []
+    zero_added = False
     for mode in args.step0b_modes:
-        specs.append((mode, "zero", 0.0))
+        if not zero_added:
+            specs.append((mode, "zero", 0.0))
+            zero_added = True
         if mode == "additive":
             specs.append((mode, "strong", float(args.step0b_additive_strong)))
         elif mode == "norm_relative":
