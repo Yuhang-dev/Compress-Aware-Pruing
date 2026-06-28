@@ -48,6 +48,46 @@ def write_csv_text_free(df: pd.DataFrame, path: Path) -> None:
     print(f"[restore-s] wrote {path}")
 
 
+def sanitize_json_scalar(value: object) -> object:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return float(value.detach().cpu().item())
+        return None
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return None
+
+
+def append_jsonl_rows(rows: list[dict[str, object]], path: Path, *, allow_text: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            clean = {}
+            for key, value in row.items():
+                if not allow_text and key in TEXT_COLUMNS:
+                    continue
+                clean_value = sanitize_json_scalar(value)
+                if clean_value is not None:
+                    clean[key] = clean_value
+            if not allow_text:
+                banned = set(clean).intersection(TEXT_COLUMNS)
+                if banned:
+                    raise ValueError(f"Refusing to write text keys {sorted(banned)} to {path}")
+            handle.write(json.dumps(clean, ensure_ascii=False) + "\n")
+    kind = "raw rows" if allow_text else "text-free rows"
+    print(f"[restore-s] appended {len(rows)} {kind} to {path}", flush=True)
+
+
+def read_jsonl_rows(path: Path) -> list[dict[str, object]]:
+    rows = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
 def load_manifest(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -769,6 +809,9 @@ def build_step0b_generation_rows(
     gate_enabled = prompt_set != "harm_eval" or args.gate_harm
     gate_layer = args.layer if args.layer in compressed_scores else sorted(compressed_scores)[0]
     specs = step0b_candidate_specs(args)
+    total = len(layer_groups) * len(windows) * len(kr_values) * len(specs) * len(prompts)
+    progress_count = 0
+    progress_every = max(1, int(args.step0b_progress_every))
     for patch_layers in layer_groups:
         layer_group_label = ",".join(str(layer) for layer in patch_layers)
         patch_tau_mean = finite_mean(tau_by_layer[layer] for layer in patch_layers)
@@ -776,6 +819,20 @@ def build_step0b_generation_rows(
             for k_r in kr_values:
                 for steering_mode, target_kind, beta_value in specs:
                     for eval_order, (prompt_id, prompt) in enumerate(prompts):
+                        progress_count += 1
+                        if (
+                            progress_count == 1
+                            or progress_count == total
+                            or progress_count % progress_every == 0
+                        ):
+                            print(
+                                "[restore-s] Step0b progress "
+                                f"config={config_name} set={prompt_set} "
+                                f"{progress_count}/{total} layer_group={layer_group_label} "
+                                f"window={window_label(window)} k={k_r} "
+                                f"mode={steering_mode} target={target_kind}",
+                                flush=True,
+                            )
                         prompt_id = int(prompt_id)
                         gate_score = float(compressed_scores[gate_layer][prompt_id])
                         gated_in = (gate_score > gate_lo_by_layer[gate_layer]) if gate_enabled else True
@@ -1331,6 +1388,73 @@ def build_step0b_decision(
     }
 
 
+def resolve_step0b_raw_rows_path(args: argparse.Namespace) -> Path:
+    return args.step0b_raw_rows or (args.output_dir / "step0b_raw_rows.jsonl")
+
+
+def tau_by_layer_from_step0b_summary(summary: pd.DataFrame, measure_layers: tuple[int, ...]) -> dict[int, float]:
+    values = {}
+    for layer in measure_layers:
+        column = f"propagated_tau_L{layer}"
+        if column in summary.columns:
+            values[layer] = mean_or_nan(summary[column])
+        else:
+            values[layer] = float("nan")
+    return values
+
+
+def judge_step0b_rows_and_write(
+    rows: list[dict[str, object]],
+    args: argparse.Namespace,
+    *,
+    judge_model_id: str,
+    measure_layers: tuple[int, ...],
+    decision_extra: dict[str, object] | None = None,
+) -> None:
+    print(f"[restore-s] Step0b judging {len(rows)} generated responses", flush=True)
+    judged = run_judge(rows, args, judge_model_id)
+    details = sanitize_step0b_details(judged)
+    summary = summarize_step0b(
+        details,
+        measure_layers=measure_layers,
+        propagated_gain_margin=args.step0b_propagated_gain_margin,
+    )
+    decision = build_step0b_decision(
+        summary,
+        args,
+        measure_layers=measure_layers,
+        tau_by_layer=tau_by_layer_from_step0b_summary(summary, measure_layers),
+    )
+    if decision_extra:
+        decision.update(decision_extra)
+    write_csv_text_free(summary, args.output_dir / "step0b_restore_s.csv")
+    write_csv_text_free(details, args.output_dir / "step0b_restore_s_details.csv")
+    (args.output_dir / "step0b_restore_s_decision.json").write_text(
+        json.dumps(decision, indent=2), encoding="utf-8"
+    )
+    print(f"[restore-s] wrote {args.output_dir / 'step0b_restore_s_decision.json'}")
+    print(f"[restore-s] Step0b decision {json.dumps(decision, ensure_ascii=False)}")
+
+
+def run_step0b_from_raw(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    judge_model_id = resolve_judge_model_id(config, args.judge_model)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = resolve_step0b_raw_rows_path(args)
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Step0b raw rows not found: {raw_path}")
+    rows = read_jsonl_rows(raw_path)
+    measure_layers = tuple(parse_int_list(args.step0b_measure_layers))
+    print(f"[restore-s] Step0b loaded {len(rows)} raw rows from {raw_path}", flush=True)
+    judge_step0b_rows_and_write(
+        rows,
+        args,
+        judge_model_id=judge_model_id,
+        measure_layers=measure_layers,
+        decision_extra={"raw_rows": str(raw_path), "source": "raw_rows"},
+    )
+
+
 def build_decision(summary: pd.DataFrame, args: argparse.Namespace, tau: float) -> dict[str, object]:
     configs = sorted(summary["config"].unique().tolist()) if not summary.empty else []
     config_results = {}
@@ -1512,6 +1636,9 @@ def run(args: argparse.Namespace) -> None:
 
 
 def run_step0b(args: argparse.Namespace) -> None:
+    if args.step0b_judge_from_raw:
+        run_step0b_from_raw(args)
+        return
     torch.manual_seed(args.seed)
     config = load_config(args.config)
     model_id = resolve_model_id(config, args.model)
@@ -1524,10 +1651,13 @@ def run_step0b(args: argparse.Namespace) -> None:
     patch_layers = sorted({layer for group in layer_groups for layer in group})
     needed_layers = sorted(set(patch_layers).union(measure_layers))
     harm_dir, harm_eval, benign_dir, benign_eval, manifest = load_prompt_splits_for_step0b(args)
+    raw_path = resolve_step0b_raw_rows_path(args)
+    if raw_path.exists():
+        raw_path.unlink()
     print(
         f"[restore-s] Step0b model={model_id} patch_layers={patch_layers} "
         f"measure_layers={list(measure_layers)} kr={kr_values} windows={[window_label(w) for w in windows]} "
-        f"harm_eval={len(harm_eval)} benign_eval={len(benign_eval)}"
+        f"harm_eval={len(harm_eval)} benign_eval={len(benign_eval)} raw_rows={raw_path}"
     )
 
     dense_vectors_by_set: dict[str, dict[int, dict[int, torch.Tensor]]] = {}
@@ -1625,6 +1755,7 @@ def run_step0b(args: argparse.Namespace) -> None:
                 windows=windows,
                 args=args,
             )
+            append_jsonl_rows(rows, raw_path, allow_text=True)
             all_judge_rows.extend(rows)
 
         del model
@@ -1632,35 +1763,27 @@ def run_step0b(args: argparse.Namespace) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    print("[restore-s] Step0b judging generated responses")
-    judged = run_judge(all_judge_rows, args, judge_model_id)
-    details = sanitize_step0b_details(judged)
-    summary = summarize_step0b(
-        details,
+    judge_step0b_rows_and_write(
+        all_judge_rows,
+        args,
+        judge_model_id=judge_model_id,
         measure_layers=measure_layers,
-        propagated_gain_margin=args.step0b_propagated_gain_margin,
+        decision_extra={
+            "raw_rows": str(raw_path),
+            "manifest": str(args.manifest),
+            "manifest_ids_used": bool(
+                manifest.get("harm_dir_ids")
+                and manifest.get("harm_eval_ids")
+                and manifest.get("benign_dir_ids")
+                and manifest.get("benign_eval_ids")
+            ),
+            "config_meta": config_meta,
+            "layer_groups": [list(group) for group in layer_groups],
+            "windows": [window_label(window) for window in windows],
+            "k_r": kr_values,
+            "steering_modes": list(args.step0b_modes),
+        },
     )
-    decision = build_step0b_decision(summary, args, measure_layers=measure_layers, tau_by_layer=tau_by_layer)
-    decision["manifest"] = str(args.manifest)
-    decision["manifest_ids_used"] = bool(
-        manifest.get("harm_dir_ids")
-        and manifest.get("harm_eval_ids")
-        and manifest.get("benign_dir_ids")
-        and manifest.get("benign_eval_ids")
-    )
-    decision["config_meta"] = config_meta
-    decision["layer_groups"] = [list(group) for group in layer_groups]
-    decision["windows"] = [window_label(window) for window in windows]
-    decision["k_r"] = kr_values
-    decision["steering_modes"] = list(args.step0b_modes)
-
-    write_csv_text_free(summary, args.output_dir / "step0b_restore_s.csv")
-    write_csv_text_free(details, args.output_dir / "step0b_restore_s_details.csv")
-    (args.output_dir / "step0b_restore_s_decision.json").write_text(
-        json.dumps(decision, indent=2), encoding="utf-8"
-    )
-    print(f"[restore-s] wrote {args.output_dir / 'step0b_restore_s_decision.json'}")
-    print(f"[restore-s] Step0b decision {json.dumps(decision, ensure_ascii=False)}")
 
 
 def main() -> None:
@@ -1716,6 +1839,9 @@ def main() -> None:
     parser.add_argument("--step0b-additive-strong", type=float, default=32.0)
     parser.add_argument("--step0b-norm-relative-strong", type=float, default=0.25)
     parser.add_argument("--step0b-propagated-gain-margin", type=float, default=1.0)
+    parser.add_argument("--step0b-progress-every", type=int, default=50)
+    parser.add_argument("--step0b-raw-rows", type=Path)
+    parser.add_argument("--step0b-judge-from-raw", action="store_true")
     parser.add_argument("--local-files-only", action="store_true")
     args = parser.parse_args()
     if args.step0b:

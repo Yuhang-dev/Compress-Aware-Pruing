@@ -44,6 +44,9 @@ STEP0B_MODES="${STEP0B_MODES:-additive norm_relative}"
 STEP0B_ADDITIVE_STRONG="${STEP0B_ADDITIVE_STRONG:-32}"
 STEP0B_NORM_RELATIVE_STRONG="${STEP0B_NORM_RELATIVE_STRONG:-0.25}"
 STEP0B_PROPAGATED_GAIN_MARGIN="${STEP0B_PROPAGATED_GAIN_MARGIN:-1.0}"
+STEP0B_PROGRESS_EVERY="${STEP0B_PROGRESS_EVERY:-50}"
+STEP0B_RAW_ROWS="${STEP0B_RAW_ROWS:-}"
+STEP0B_JUDGE_FROM_RAW="${STEP0B_JUDGE_FROM_RAW:-0}"
 
 DATA_ARGS=()
 if [[ -n "$HARMFUL_FILE" ]]; then
@@ -72,6 +75,12 @@ if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
 fi
 if [[ "$GATE_HARM" == "1" ]]; then
   OPTIONAL_ARGS+=(--gate-harm)
+fi
+if [[ -n "$STEP0B_RAW_ROWS" ]]; then
+  OPTIONAL_ARGS+=(--step0b-raw-rows "$STEP0B_RAW_ROWS")
+fi
+if [[ "$STEP0B_JUDGE_FROM_RAW" == "1" ]]; then
+  OPTIONAL_ARGS+=(--step0b-judge-from-raw)
 fi
 
 python -m casafety.step0_restore_s \
@@ -106,5 +115,6 @@ python -m casafety.step0_restore_s \
   --step0b-additive-strong "$STEP0B_ADDITIVE_STRONG" \
   --step0b-norm-relative-strong "$STEP0B_NORM_RELATIVE_STRONG" \
   --step0b-propagated-gain-margin "$STEP0B_PROPAGATED_GAIN_MARGIN" \
+  --step0b-progress-every "$STEP0B_PROGRESS_EVERY" \
   "${DATA_ARGS[@]}" \
   "${OPTIONAL_ARGS[@]}"
