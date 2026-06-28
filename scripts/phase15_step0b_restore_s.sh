@@ -43,6 +43,7 @@ STEP0B_WINDOWS="${STEP0B_WINDOWS:-6 32}"
 STEP0B_MODES="${STEP0B_MODES:-additive norm_relative}"
 STEP0B_ADDITIVE_STRONG="${STEP0B_ADDITIVE_STRONG:-32}"
 STEP0B_NORM_RELATIVE_STRONG="${STEP0B_NORM_RELATIVE_STRONG:-0.25}"
+STEP0B_PROPAGATED_GAIN_MARGIN="${STEP0B_PROPAGATED_GAIN_MARGIN:-1.0}"
 
 DATA_ARGS=()
 if [[ -n "$HARMFUL_FILE" ]]; then
@@ -104,5 +105,6 @@ python -m casafety.step0_restore_s \
   --step0b-modes $STEP0B_MODES \
   --step0b-additive-strong "$STEP0B_ADDITIVE_STRONG" \
   --step0b-norm-relative-strong "$STEP0B_NORM_RELATIVE_STRONG" \
+  --step0b-propagated-gain-margin "$STEP0B_PROPAGATED_GAIN_MARGIN" \
   "${DATA_ARGS[@]}" \
   "${OPTIONAL_ARGS[@]}"
