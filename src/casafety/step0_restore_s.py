@@ -58,6 +58,28 @@ def sanitize_json_scalar(value: object) -> object:
     return None
 
 
+def json_default(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            pass
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def json_dumps_safe(value: object, **kwargs) -> str:
+    return json.dumps(value, default=json_default, **kwargs)
+
+
 def append_jsonl_rows(rows: list[dict[str, object]], path: Path, *, allow_text: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -73,7 +95,7 @@ def append_jsonl_rows(rows: list[dict[str, object]], path: Path, *, allow_text: 
                 banned = set(clean).intersection(TEXT_COLUMNS)
                 if banned:
                     raise ValueError(f"Refusing to write text keys {sorted(banned)} to {path}")
-            handle.write(json.dumps(clean, ensure_ascii=False) + "\n")
+            handle.write(json_dumps_safe(clean, ensure_ascii=False) + "\n")
     kind = "raw rows" if allow_text else "text-free rows"
     print(f"[restore-s] appended {len(rows)} {kind} to {path}", flush=True)
 
@@ -1430,10 +1452,10 @@ def judge_step0b_rows_and_write(
     write_csv_text_free(summary, args.output_dir / "step0b_restore_s.csv")
     write_csv_text_free(details, args.output_dir / "step0b_restore_s_details.csv")
     (args.output_dir / "step0b_restore_s_decision.json").write_text(
-        json.dumps(decision, indent=2), encoding="utf-8"
+        json_dumps_safe(decision, indent=2), encoding="utf-8"
     )
     print(f"[restore-s] wrote {args.output_dir / 'step0b_restore_s_decision.json'}")
-    print(f"[restore-s] Step0b decision {json.dumps(decision, ensure_ascii=False)}")
+    print(f"[restore-s] Step0b decision {json_dumps_safe(decision, ensure_ascii=False)}")
 
 
 def run_step0b_from_raw(args: argparse.Namespace) -> None:
@@ -1526,10 +1548,10 @@ def run_step0b_merge(args: argparse.Namespace) -> None:
         }
     )
     (args.output_dir / "step0b_restore_s_decision.json").write_text(
-        json.dumps(decision, indent=2), encoding="utf-8"
+        json_dumps_safe(decision, indent=2), encoding="utf-8"
     )
     print(f"[restore-s] merged {len(sources)} shards into {args.output_dir}", flush=True)
-    print(f"[restore-s] Step0b merged decision {json.dumps(decision, ensure_ascii=False)}", flush=True)
+    print(f"[restore-s] Step0b merged decision {json_dumps_safe(decision, ensure_ascii=False)}", flush=True)
 
 
 def build_decision(summary: pd.DataFrame, args: argparse.Namespace, tau: float) -> dict[str, object]:
@@ -1706,10 +1728,10 @@ def run(args: argparse.Namespace) -> None:
     write_csv_text_free(summary, args.output_dir / "step0_restore_s.csv")
     write_csv_text_free(details, args.output_dir / "step0_restore_s_details.csv")
     (args.output_dir / "step0_restore_s_decision.json").write_text(
-        json.dumps(decision, indent=2), encoding="utf-8"
+        json_dumps_safe(decision, indent=2), encoding="utf-8"
     )
     print(f"[restore-s] wrote {args.output_dir / 'step0_restore_s_decision.json'}")
-    print(f"[restore-s] decision {json.dumps(decision, ensure_ascii=False)}")
+    print(f"[restore-s] decision {json_dumps_safe(decision, ensure_ascii=False)}")
 
 
 def run_step0b(args: argparse.Namespace) -> None:
