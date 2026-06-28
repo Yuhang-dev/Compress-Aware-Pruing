@@ -4,15 +4,8 @@ set -euo pipefail
 MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/phase15_vpref_projection}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts/vpref_projection}"
-VPREF_ARTIFACT="${VPREF_ARTIFACT:-}"
 MANIFEST="${MANIFEST:-$OUTPUT_DIR/vpref_manifest.json}"
-SUMMARY="${SUMMARY:-$OUTPUT_DIR/vpref_projection_summary.csv}"
 LAYER="${LAYER:-28}"
-TAU="${TAU:-}"
-GAMMA="${GAMMA:-5}"
-BETA_MAX="${BETA_MAX:-40}"
-FIXED_BETAS="${FIXED_BETAS:-0 8 16 24 32}"
-PATCH_DECODE_TOKENS="${PATCH_DECODE_TOKENS:-6}"
 GATE_STD="${GATE_STD:-3}"
 GATE_HARM="${GATE_HARM:-0}"
 SEED="${SEED:-0}"
@@ -43,6 +36,14 @@ BENIGN_REFUSAL_MAX="${BENIGN_REFUSAL_MAX:-0.1}"
 COHERENT_MIN="${COHERENT_MIN:-0.9}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 
+STEP0B_LAYER_GROUPS="${STEP0B_LAYER_GROUPS:-28;24,28,32}"
+STEP0B_MEASURE_LAYERS="${STEP0B_MEASURE_LAYERS:-32,35}"
+STEP0B_KR="${STEP0B_KR:-1 4}"
+STEP0B_WINDOWS="${STEP0B_WINDOWS:-6 32}"
+STEP0B_MODES="${STEP0B_MODES:-additive norm_relative}"
+STEP0B_ADDITIVE_STRONG="${STEP0B_ADDITIVE_STRONG:-32}"
+STEP0B_NORM_RELATIVE_STRONG="${STEP0B_NORM_RELATIVE_STRONG:-0.25}"
+
 DATA_ARGS=()
 if [[ -n "$HARMFUL_FILE" ]]; then
   DATA_ARGS+=(--harmful-file "$HARMFUL_FILE")
@@ -62,12 +63,6 @@ else
 fi
 
 OPTIONAL_ARGS=()
-if [[ -n "$VPREF_ARTIFACT" ]]; then
-  OPTIONAL_ARGS+=(--vpref-artifact "$VPREF_ARTIFACT")
-fi
-if [[ -n "$TAU" ]]; then
-  OPTIONAL_ARGS+=(--tau "$TAU")
-fi
 if [[ -n "$JUDGE_MODEL" ]]; then
   OPTIONAL_ARGS+=(--judge-model "$JUDGE_MODEL")
 fi
@@ -79,17 +74,13 @@ if [[ "$GATE_HARM" == "1" ]]; then
 fi
 
 python -m casafety.step0_restore_s \
+  --step0b \
   --config configs/base.yaml \
   --model "$MODEL" \
   --output-dir "$OUTPUT_DIR" \
   --artifact-dir "$ARTIFACT_DIR" \
   --manifest "$MANIFEST" \
-  --summary "$SUMMARY" \
   --layer "$LAYER" \
-  --gamma "$GAMMA" \
-  --beta-max "$BETA_MAX" \
-  --fixed-betas $FIXED_BETAS \
-  --patch-decode-tokens "$PATCH_DECODE_TOKENS" \
   --gate-std "$GATE_STD" \
   --seed "$SEED" \
   --direction-limit "$DIRECTION_LIMIT" \
@@ -106,5 +97,12 @@ python -m casafety.step0_restore_s \
   --harm-unsafe-max "$HARM_UNSAFE_MAX" \
   --benign-refusal-max "$BENIGN_REFUSAL_MAX" \
   --coherent-min "$COHERENT_MIN" \
+  --step0b-layer-groups "$STEP0B_LAYER_GROUPS" \
+  --step0b-measure-layers "$STEP0B_MEASURE_LAYERS" \
+  --step0b-kr $STEP0B_KR \
+  --step0b-windows $STEP0B_WINDOWS \
+  --step0b-modes $STEP0B_MODES \
+  --step0b-additive-strong "$STEP0B_ADDITIVE_STRONG" \
+  --step0b-norm-relative-strong "$STEP0B_NORM_RELATIVE_STRONG" \
   "${DATA_ARGS[@]}" \
   "${OPTIONAL_ARGS[@]}"
