@@ -2,27 +2,31 @@
 set -euo pipefail
 
 MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
-SHARD_ROOT="${SHARD_ROOT:-results/phase15_step0b_parallel}"
+SHARD_ROOT="${SHARD_ROOT:-results/phase15_mechanism_seal_residual_sweep_shards}"
 LOG_DIR="${LOG_DIR:-logs}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts/vpref_projection}"
 MANIFEST="${MANIFEST:-results/phase15_vpref_projection/vpref_manifest.json}"
 BENIGN_FILE="${BENIGN_FILE:-data/alpaca_cleaned_train.jsonl}"
-EVAL_LIMIT="${EVAL_LIMIT:-32}"
+WANDA_CONFIGS="${WANDA_CONFIGS:-wanda_40:0.40 wanda_45:0.45 wanda_50:0.50 wanda_55:0.55}"
+EVAL_LIMIT="${EVAL_LIMIT:-128}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
 JUDGE_MAX_NEW_TOKENS="${JUDGE_MAX_NEW_TOKENS:-16}"
 STEP0B_WINDOWS="${STEP0B_WINDOWS:-32}"
-STEP0B_PROGRESS_EVERY="${STEP0B_PROGRESS_EVERY:-20}"
-STEP0B_CONFIGS="${STEP0B_CONFIGS:-wanda_45:0.45 wanda_50:0.50}"
-STEP0B_TARGET_KINDS="${STEP0B_TARGET_KINDS:-zero strong dense_ref}"
+STEP0B_LAYER_GROUPS="${STEP0B_LAYER_GROUPS:-24,28,32}"
+STEP0B_MEASURE_LAYERS="${STEP0B_MEASURE_LAYERS:-32,35}"
+STEP0B_KR="${STEP0B_KR:-1}"
+STEP0B_MODES="${STEP0B_MODES:-norm_relative}"
+STEP0B_TARGET_KINDS="${STEP0B_TARGET_KINDS:-zero strong}"
+STEP0B_NORM_RELATIVE_STRONG="${STEP0B_NORM_RELATIVE_STRONG:-0.25}"
+STEP0B_PROGRESS_EVERY="${STEP0B_PROGRESS_EVERY:-50}"
 SEED="${SEED:-0}"
 DIRECTION_LIMIT="${DIRECTION_LIMIT:-256}"
 HARM_EVAL_OFFSET="${HARM_EVAL_OFFSET:-0}"
 BENIGN_EVAL_OFFSET="${BENIGN_EVAL_OFFSET:-0}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 PREPARE_INPUTS="${PREPARE_INPUTS:-1}"
-WAIT_AND_MERGE="${WAIT_AND_MERGE:-0}"
-MERGED_OUTPUT_DIR="${MERGED_OUTPUT_DIR:-results/phase15_step0b_parallel_merged}"
-STEP0B_SHARDS="${STEP0B_SHARDS:-lg28_k1 lg28_k4 lg242832_k1 lg242832_k4}"
+WAIT_AND_SUMMARIZE="${WAIT_AND_SUMMARIZE:-0}"
+SEAL_OUTPUT="${SEAL_OUTPUT:-results/phase15_vpref_projection/mechanism_seal_residual_sweep.csv}"
 
 mkdir -p "$SHARD_ROOT" "$LOG_DIR"
 
@@ -35,9 +39,13 @@ COMMON_ENV=(
   MAX_NEW_TOKENS="$MAX_NEW_TOKENS"
   JUDGE_MAX_NEW_TOKENS="$JUDGE_MAX_NEW_TOKENS"
   STEP0B_WINDOWS="$STEP0B_WINDOWS"
-  STEP0B_PROGRESS_EVERY="$STEP0B_PROGRESS_EVERY"
-  STEP0B_CONFIGS="$STEP0B_CONFIGS"
+  STEP0B_LAYER_GROUPS="$STEP0B_LAYER_GROUPS"
+  STEP0B_MEASURE_LAYERS="$STEP0B_MEASURE_LAYERS"
+  STEP0B_KR="$STEP0B_KR"
+  STEP0B_MODES="$STEP0B_MODES"
   STEP0B_TARGET_KINDS="$STEP0B_TARGET_KINDS"
+  STEP0B_NORM_RELATIVE_STRONG="$STEP0B_NORM_RELATIVE_STRONG"
+  STEP0B_PROGRESS_EVERY="$STEP0B_PROGRESS_EVERY"
   SEED="$SEED"
   DIRECTION_LIMIT="$DIRECTION_LIMIT"
   HARM_EVAL_OFFSET="$HARM_EVAL_OFFSET"
@@ -51,11 +59,9 @@ if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
 fi
 
 if [[ "$PREPARE_INPUTS" == "1" ]]; then
-  echo "[step0b-parallel] preparing shared direction inputs"
+  echo "[mechanism-seal] preparing shared Step0b direction inputs"
   env "${COMMON_ENV[@]}" \
     OUTPUT_DIR="$SHARD_ROOT/_prepare" \
-    STEP0B_LAYER_GROUPS="28;24,28,32" \
-    STEP0B_KR="1 4" \
     python -m casafety.step0_restore_s \
       --step0b \
       --step0b-prepare-only \
@@ -71,9 +77,13 @@ if [[ "$PREPARE_INPUTS" == "1" ]]; then
       --benign-eval-offset "$BENIGN_EVAL_OFFSET" \
       --max-new-tokens "$MAX_NEW_TOKENS" \
       --judge-max-new-tokens "$JUDGE_MAX_NEW_TOKENS" \
-      --step0b-layer-groups "28;24,28,32" \
-      --step0b-kr 1 4 \
+      --step0b-layer-groups "$STEP0B_LAYER_GROUPS" \
+      --step0b-measure-layers "$STEP0B_MEASURE_LAYERS" \
+      --step0b-kr $STEP0B_KR \
       --step0b-windows $STEP0B_WINDOWS \
+      --step0b-modes $STEP0B_MODES \
+      --step0b-target-kinds $STEP0B_TARGET_KINDS \
+      --step0b-norm-relative-strong "$STEP0B_NORM_RELATIVE_STRONG" \
       --benign-file "$BENIGN_FILE" \
       "${LOCAL_ARGS[@]}"
 fi
@@ -81,54 +91,28 @@ fi
 PIDS=()
 DIRS=()
 
-run_shard() {
-  local layer_group="$1"
-  local kr="$2"
-  local tag="$3"
-  local out_dir="$SHARD_ROOT/$tag"
-  local log_file="$LOG_DIR/$tag.log"
+for spec in $WANDA_CONFIGS; do
+  tag="${spec%%:*}"
+  out_dir="$SHARD_ROOT/$tag"
+  log_file="$LOG_DIR/mechanism_seal_residual_${tag}.log"
   mkdir -p "$out_dir"
-  echo "[step0b-parallel] launching $tag layer_group=$layer_group k=$kr out=$out_dir log=$log_file"
+  echo "[mechanism-seal] launching residual shard $tag config=$spec out=$out_dir log=$log_file"
   (
     env "${COMMON_ENV[@]}" \
       OUTPUT_DIR="$out_dir" \
-      STEP0B_LAYER_GROUPS="$layer_group" \
-      STEP0B_KR="$kr" \
+      STEP0B_CONFIGS="$spec" \
       bash scripts/phase15_step0b_restore_s.sh
   ) > "$log_file" 2>&1 &
   PIDS+=("$!")
   DIRS+=("$out_dir")
-}
+done
 
-should_run_shard() {
-  local tag="$1"
-  [[ " $STEP0B_SHARDS " == *" $tag "* ]]
-}
+echo "[mechanism-seal] pids: ${PIDS[*]}"
+echo "[mechanism-seal] logs: $LOG_DIR/mechanism_seal_residual_*.log"
+echo "[mechanism-seal] summarize after completion:"
+echo "  SHARD_ROOT=$SHARD_ROOT SEAL_OUTPUT=$SEAL_OUTPUT bash scripts/phase15_mechanism_seal_residual_merge.sh"
 
-if should_run_shard "lg28_k1"; then
-  run_shard "28" "1" "lg28_k1"
-fi
-if should_run_shard "lg28_k4"; then
-  run_shard "28" "4" "lg28_k4"
-fi
-if should_run_shard "lg242832_k1"; then
-  run_shard "24,28,32" "1" "lg242832_k1"
-fi
-if should_run_shard "lg242832_k4"; then
-  run_shard "24,28,32" "4" "lg242832_k4"
-fi
-
-if [[ "${#PIDS[@]}" == "0" ]]; then
-  echo "[step0b-parallel] no shards selected by STEP0B_SHARDS=$STEP0B_SHARDS" >&2
-  exit 1
-fi
-
-echo "[step0b-parallel] pids: ${PIDS[*]}"
-echo "[step0b-parallel] logs: $LOG_DIR/lg*.log"
-echo "[step0b-parallel] merge after completion:"
-echo "  SHARD_ROOT=$SHARD_ROOT MERGED_OUTPUT_DIR=$MERGED_OUTPUT_DIR bash scripts/phase15_step0b_merge.sh"
-
-if [[ "$WAIT_AND_MERGE" == "1" ]]; then
+if [[ "$WAIT_AND_SUMMARIZE" == "1" ]]; then
   status=0
   for pid in "${PIDS[@]}"; do
     if ! wait "$pid"; then
@@ -136,8 +120,9 @@ if [[ "$WAIT_AND_MERGE" == "1" ]]; then
     fi
   done
   if [[ "$status" != "0" ]]; then
-    echo "[step0b-parallel] at least one shard failed" >&2
+    echo "[mechanism-seal] at least one residual shard failed" >&2
     exit "$status"
   fi
-  SHARD_ROOT="$SHARD_ROOT" MERGED_OUTPUT_DIR="$MERGED_OUTPUT_DIR" bash scripts/phase15_step0b_merge.sh
+  SHARD_ROOT="$SHARD_ROOT" WANDA_CONFIGS="$WANDA_CONFIGS" SEAL_OUTPUT="$SEAL_OUTPUT" \
+    bash scripts/phase15_mechanism_seal_residual_merge.sh
 fi

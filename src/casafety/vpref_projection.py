@@ -402,6 +402,61 @@ def benign_contrast_candidates(
     return candidates
 
 
+def activation_contrast_rows(
+    *,
+    benign_acts: dict[int, dict[str, torch.Tensor]],
+    min_group: int,
+    max_controls: int,
+    quantile: float,
+) -> list[dict[str, object]]:
+    if max_controls <= 0:
+        return []
+    ordered_ids = sorted(benign_acts)
+    if len(ordered_ids) < 2 * min_group:
+        return []
+    acts = stack_last(benign_acts, ordered_ids).float()
+    centered = acts - acts.mean(dim=0, keepdim=True)
+    try:
+        _u, _s, vh = torch.linalg.svd(centered, full_matrices=False)
+    except RuntimeError:
+        return []
+    group_size = max(min_group, int(round(len(ordered_ids) * quantile)))
+    group_size = min(group_size, len(ordered_ids) // 2)
+    if group_size < min_group:
+        return []
+    rows: list[dict[str, object]] = []
+    for pc_idx in range(min(max_controls, vh.shape[0])):
+        seed_direction = unit_or_zero(vh[pc_idx].float())
+        if float(seed_direction.norm()) <= 1e-12:
+            continue
+        scores = centered.matmul(seed_direction)
+        order = torch.argsort(scores)
+        neg_positions = order[:group_size].tolist()
+        pos_positions = order[-group_size:].tolist()
+        pos_ids = [ordered_ids[pos] for pos in pos_positions]
+        neg_ids = [ordered_ids[pos] for pos in neg_positions]
+        pos = stack_last(benign_acts, pos_ids)
+        neg = stack_last(benign_acts, neg_ids)
+        direction = unit_or_zero(pos.mean(dim=0) - neg.mean(dim=0))
+        if float(direction.norm()) <= 1e-12:
+            continue
+        pos_scores = [float(value) for value in pos.matmul(direction).tolist()]
+        neg_scores = [float(value) for value in neg.matmul(direction).tolist()]
+        rows.append(
+            {
+                "name": f"ctrl_activation_pc{pc_idx + 1}_top_vs_bottom",
+                "direction": direction,
+                "positive_label": f"pc{pc_idx + 1}_top",
+                "negative_label": f"pc{pc_idx + 1}_bottom",
+                "n_positive": len(pos_ids),
+                "n_negative": len(neg_ids),
+                "probe_cv_acc": threshold_cv_accuracy(pos_scores, neg_scores),
+                "pooled_gap": pooled_gap(pos_scores, neg_scores),
+            }
+        )
+    return rows
+
+
 def build_control_directions(
     *,
     benign_acts: dict[int, dict[int, dict[str, torch.Tensor]]],
@@ -410,6 +465,8 @@ def build_control_directions(
     target_probe_cv_by_layer: dict[int, float],
     max_controls: int,
     min_group: int,
+    activation_controls: int,
+    activation_control_quantile: float,
 ) -> dict[int, list[dict[str, object]]]:
     candidates = benign_contrast_candidates(benign_prompts, min_group)
     controls_by_layer: dict[int, list[dict[str, object]]] = {}
@@ -445,6 +502,16 @@ def build_control_directions(
                     "pooled_gap": pooled_gap(pos_scores, neg_scores),
                 }
             )
+        for row in activation_contrast_rows(
+            benign_acts=benign_acts[layer],
+            min_group=min_group,
+            max_controls=activation_controls,
+            quantile=activation_control_quantile,
+        ):
+            probe_cv_acc = float(row["probe_cv_acc"])
+            row["target_probe_cv_acc"] = target_cv
+            row["probe_cv_abs_gap"] = abs(probe_cv_acc - target_cv) if math.isfinite(probe_cv_acc) and math.isfinite(target_cv) else float("nan")
+            layer_rows.append(row)
         layer_rows.sort(
             key=lambda row: (
                 row["probe_cv_abs_gap"] if math.isfinite(float(row["probe_cv_abs_gap"])) else float("inf"),
@@ -1613,6 +1680,8 @@ def run(args: argparse.Namespace) -> None:
         target_probe_cv_by_layer=harm_probe_cv_by_layer,
         max_controls=args.control_directions,
         min_group=args.control_min_group,
+        activation_controls=args.activation_control_directions,
+        activation_control_quantile=args.activation_control_quantile,
     )
     control_metadata = control_metadata_table(controls_by_layer)
     write_csv_text_free(control_metadata, output_dir / "vpref_control_directions.csv")
@@ -1785,6 +1854,8 @@ def run(args: argparse.Namespace) -> None:
     manifest["validation_min_delta"] = args.validation_min_delta
     manifest["control_directions"] = args.control_directions
     manifest["control_min_group"] = args.control_min_group
+    manifest["activation_control_directions"] = args.activation_control_directions
+    manifest["activation_control_quantile"] = args.activation_control_quantile
     manifest["control_collapse_ratio"] = args.control_collapse_ratio
     manifest["specificity_allowed_pairs"] = (
         [{"layer": layer, "k_r": kr} for layer, kr in sorted(allowed_pairs)] if allowed_pairs is not None else "all"
@@ -1818,6 +1889,8 @@ def main() -> None:
     parser.add_argument("--validation-min-delta", type=float, default=0.1)
     parser.add_argument("--control-directions", type=int, default=2)
     parser.add_argument("--control-min-group", type=int, default=16)
+    parser.add_argument("--activation-control-directions", type=int, default=0)
+    parser.add_argument("--activation-control-quantile", type=float, default=0.25)
     parser.add_argument("--control-collapse-ratio", type=float, default=0.5)
     parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
     parser.add_argument("--calib-max-length", type=int, default=1024)

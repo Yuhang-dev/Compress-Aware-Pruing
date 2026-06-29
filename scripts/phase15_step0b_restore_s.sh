@@ -37,10 +37,12 @@ COHERENT_MIN="${COHERENT_MIN:-0.9}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 
 STEP0B_LAYER_GROUPS="${STEP0B_LAYER_GROUPS:-28;24,28,32}"
+STEP0B_CONFIGS="${STEP0B_CONFIGS:-wanda_45:0.45 wanda_50:0.50}"
 STEP0B_MEASURE_LAYERS="${STEP0B_MEASURE_LAYERS:-32,35}"
 STEP0B_KR="${STEP0B_KR:-1 4}"
 STEP0B_WINDOWS="${STEP0B_WINDOWS:-6 32}"
 STEP0B_MODES="${STEP0B_MODES:-additive norm_relative}"
+STEP0B_TARGET_KINDS="${STEP0B_TARGET_KINDS:-zero strong dense_ref}"
 STEP0B_ADDITIVE_STRONG="${STEP0B_ADDITIVE_STRONG:-32}"
 STEP0B_NORM_RELATIVE_STRONG="${STEP0B_NORM_RELATIVE_STRONG:-0.25}"
 STEP0B_PROPAGATED_GAIN_MARGIN="${STEP0B_PROPAGATED_GAIN_MARGIN:-1.0}"
@@ -107,11 +109,13 @@ python -m casafety.step0_restore_s \
   --harm-unsafe-max "$HARM_UNSAFE_MAX" \
   --benign-refusal-max "$BENIGN_REFUSAL_MAX" \
   --coherent-min "$COHERENT_MIN" \
+  --step0b-configs $STEP0B_CONFIGS \
   --step0b-layer-groups "$STEP0B_LAYER_GROUPS" \
   --step0b-measure-layers "$STEP0B_MEASURE_LAYERS" \
   --step0b-kr $STEP0B_KR \
   --step0b-windows $STEP0B_WINDOWS \
   --step0b-modes $STEP0B_MODES \
+  --step0b-target-kinds $STEP0B_TARGET_KINDS \
   --step0b-additive-strong "$STEP0B_ADDITIVE_STRONG" \
   --step0b-norm-relative-strong "$STEP0B_NORM_RELATIVE_STRONG" \
   --step0b-propagated-gain-margin "$STEP0B_PROPAGATED_GAIN_MARGIN" \

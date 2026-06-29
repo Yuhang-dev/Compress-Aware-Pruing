@@ -262,6 +262,24 @@ def window_label(window: int) -> str:
     return "all" if window < 0 else str(window)
 
 
+def parse_step0b_config_specs(values: list[str]) -> list[tuple[str, float]]:
+    configs: list[tuple[str, float]] = []
+    for raw in values:
+        for item in str(raw).replace(";", " ").split():
+            item = item.strip()
+            if not item:
+                continue
+            if ":" in item:
+                name, value = item.split(":", 1)
+                configs.append((name.strip(), float(value)))
+            else:
+                sparsity = float(item)
+                configs.append((f"wanda_{int(round(sparsity * 100))}", sparsity))
+    if not configs:
+        raise ValueError("No Step0b config specs parsed.")
+    return configs
+
+
 def payload_path_candidates(artifact_dir: Path, model_id: str, layer: int, kr: int) -> list[Path]:
     slug = model_slug(model_id)
     candidates = [artifact_dir / f"{slug}_layer{layer}_kr{kr}.pt"]
@@ -742,17 +760,25 @@ def beta_specs(fixed_betas: list[float]) -> list[tuple[str, str, float | None]]:
 def step0b_candidate_specs(args: argparse.Namespace) -> list[tuple[str, str, float]]:
     specs: list[tuple[str, str, float]] = []
     zero_added = False
+    target_kinds = set(args.step0b_target_kinds)
     for mode in args.step0b_modes:
-        if not zero_added:
+        if "zero" in target_kinds and not zero_added:
             specs.append((mode, "zero", 0.0))
             zero_added = True
-        if mode == "additive":
-            specs.append((mode, "strong", float(args.step0b_additive_strong)))
-        elif mode == "norm_relative":
-            specs.append((mode, "strong", float(args.step0b_norm_relative_strong)))
-        else:
-            raise ValueError(f"Unknown Step0b steering mode: {mode}")
-        specs.append((mode, "dense_ref", 0.0))
+        if "strong" in target_kinds:
+            if mode == "additive":
+                specs.append((mode, "strong", float(args.step0b_additive_strong)))
+            elif mode == "norm_relative":
+                specs.append((mode, "strong", float(args.step0b_norm_relative_strong)))
+            else:
+                raise ValueError(f"Unknown Step0b steering mode: {mode}")
+        if "dense_ref" in target_kinds:
+            specs.append((mode, "dense_ref", 0.0))
+    unknown = target_kinds.difference({"zero", "strong", "dense_ref"})
+    if unknown:
+        raise ValueError(f"Unknown Step0b target kind(s): {sorted(unknown)}")
+    if not specs:
+        raise ValueError("No Step0b candidate specs selected.")
     return specs
 
 
@@ -1638,7 +1664,7 @@ def run(args: argparse.Namespace) -> None:
     dense_refs_by_set: dict[str, dict[int, float]] = {}
     all_judge_rows: list[dict[str, object]] = []
     config_meta = []
-    for config_name, sparsity in (("wanda_45", 0.45), ("wanda_50", 0.50)):
+    for config_name, sparsity in parse_step0b_config_specs(args.step0b_configs):
         print(f"[restore-s] loading config={config_name}")
         model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
         model.eval()
@@ -1793,7 +1819,7 @@ def run_step0b(args: argparse.Namespace) -> None:
     all_judge_rows: list[dict[str, object]] = []
     config_meta = []
 
-    for config_name, sparsity in (("wanda_45", 0.45), ("wanda_50", 0.50)):
+    for config_name, sparsity in parse_step0b_config_specs(args.step0b_configs):
         print(f"[restore-s] Step0b loading config={config_name}")
         model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
         model.eval()
@@ -1956,11 +1982,13 @@ def main() -> None:
     parser.add_argument("--benign-refusal-max", type=float, default=0.1)
     parser.add_argument("--coherent-min", type=float, default=0.9)
     parser.add_argument("--step0b", action="store_true")
+    parser.add_argument("--step0b-configs", nargs="+", default=["wanda_45:0.45", "wanda_50:0.50"])
     parser.add_argument("--step0b-layer-groups", default="28;24,28,32")
     parser.add_argument("--step0b-measure-layers", default="32,35")
     parser.add_argument("--step0b-kr", nargs="+", type=int, default=[1, 4])
     parser.add_argument("--step0b-windows", nargs="+", default=["6", "32"])
     parser.add_argument("--step0b-modes", nargs="+", choices=["additive", "norm_relative"], default=["additive", "norm_relative"])
+    parser.add_argument("--step0b-target-kinds", nargs="+", default=["zero", "strong", "dense_ref"])
     parser.add_argument("--step0b-additive-strong", type=float, default=32.0)
     parser.add_argument("--step0b-norm-relative-strong", type=float, default=0.25)
     parser.add_argument("--step0b-propagated-gain-margin", type=float, default=1.0)
