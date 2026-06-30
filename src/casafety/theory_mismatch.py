@@ -755,9 +755,9 @@ def run(args: argparse.Namespace) -> None:
                         modules=subset,
                         scope="module_kind",
                         group_value=kind,
-                        max_samples=args.correlation_sample,
-                        bootstrap_reps=args.bootstrap_reps,
-                        bootstrap_sample_size=args.bootstrap_sample_size,
+                        max_samples=args.group_correlation_sample,
+                        bootstrap_reps=args.group_bootstrap_reps,
+                        bootstrap_sample_size=args.group_bootstrap_sample_size,
                         seed=args.seed + 1009 * readout_layer + 97 * len(kind) + (0 if variant == "grad" else 17),
                     )
                 )
@@ -772,9 +772,9 @@ def run(args: argparse.Namespace) -> None:
                         modules=subset,
                         scope="module_layer",
                         group_value=str(mod_layer),
-                        max_samples=args.correlation_sample,
-                        bootstrap_reps=args.bootstrap_reps,
-                        bootstrap_sample_size=args.bootstrap_sample_size,
+                        max_samples=args.group_correlation_sample,
+                        bootstrap_reps=args.group_bootstrap_reps,
+                        bootstrap_sample_size=args.group_bootstrap_sample_size,
                         seed=args.seed + 1009 * readout_layer + 131 * int(mod_layer) + (0 if variant == "grad" else 17),
                     )
                 )
@@ -895,6 +895,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--correlation-sample", type=int, default=1_000_000)
     parser.add_argument("--bootstrap-reps", type=int, default=100)
     parser.add_argument("--bootstrap-sample-size", type=int, default=50_000)
+    parser.add_argument("--group-correlation-sample", type=int, default=200_000)
+    parser.add_argument("--group-bootstrap-reps", type=int, default=20)
+    parser.add_argument("--group-bootstrap-sample-size", type=int, default=20_000)
     parser.add_argument("--percentile-ci-sample", type=int, default=200_000)
     parser.add_argument("--decision-layer", type=int, default=-1)
     parser.add_argument("--decision-corr-threshold", type=float, default=0.15)
