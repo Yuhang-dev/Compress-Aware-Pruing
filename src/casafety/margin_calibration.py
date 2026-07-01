@@ -428,99 +428,13 @@ def build_decision(
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
-    parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--output-dir", type=Path, default=Path("results/phase15_margin_calib"))
-    parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/vpref_projection"))
-    parser.add_argument("--layers", type=parse_int_list, default=parse_int_list("24,28,32"))
-    parser.add_argument("--kr", type=int, default=1)
-    parser.add_argument("--conditions", default="dense wanda_45 wanda_50 wanda_55")
-    parser.add_argument("--harmful-file", type=Path)
-    parser.add_argument("--harmful-dataset", default="walledai/AdvBench")
-    parser.add_argument("--harmful-config")
-    parser.add_argument("--harmful-split", default="train")
-    parser.add_argument("--harmful-column", default="auto")
-    parser.add_argument("--harmful-offset", type=int, default=0)
-    parser.add_argument("--harmful-limit", type=int, default=128)
-    parser.add_argument("--max-length", type=int, default=1024)
-    parser.add_argument("--calib-max-length", type=int, default=1024)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
-    parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
-    parser.add_argument("--judge", choices=["keyword", "llamaguard"], default="llamaguard")
-    parser.add_argument("--judge-model")
-    parser.add_argument("--judge-max-new-tokens", type=int, default=16)
-    parser.add_argument("--restore-s-residual-counts", default="wanda_40:0 wanda_45:0 wanda_50:5 wanda_55:9")
-    parser.add_argument("--restore-s-residual-denominator", type=int, default=128)
-    parser.add_argument("--auc-threshold", type=float, default=0.85)
-    parser.add_argument("--readout-share-threshold", type=float, default=0.85)
-    parser.add_argument("--local-files-only", action="store_true")
-    parser.add_argument("--no-local-files-only", dest="local_files_only", action="store_false")
-    parser.set_defaults(local_files_only=True)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    model_id = resolve_model_id(config, args.model)
-    conditions = parse_conditions(args.conditions)
-    prompt_rows = load_prompt_rows(
-        file=args.harmful_file,
-        dataset=args.harmful_dataset,
-        config=args.harmful_config,
-        split=args.harmful_split,
-        column=args.harmful_column,
-        local_files_only=args.local_files_only,
-    )
-    prompts = prompt_rows[args.harmful_offset :]
-    prompts = prompts[: args.harmful_limit] if args.harmful_limit else prompts
-    directions = {
-        layer: load_refusal_direction(args.artifact_dir, model_id, layer, args.kr)
-        for layer in args.layers
-    }
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    all_compact_rows = []
-    for condition in conditions:
-        print(f"[margin-calib] running condition={condition.name}")
-        model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
-        if condition.pruner:
-            apply_pruning(model, tokenizer, condition.pruner, condition.sparsity, args.calib_max_length)
-        condition_rows = generate_condition_rows(
-            model,
-            tokenizer,
-            prompts,
-            model_id=model_id,
-            condition=condition,
-            layers=args.layers,
-            directions=directions,
-            max_length=args.max_length,
-            max_new_tokens=args.max_new_tokens,
-            response_ppl_threshold=args.response_ppl_threshold,
-        )
-        del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if args.judge == "llamaguard":
-            judge_model_id = resolve_judge_model_id(config, args.judge_model)
-            condition_rows = judge_with_llamaguard(
-                condition_rows,
-                judge_model_id=judge_model_id,
-                local_files_only=args.local_files_only,
-                max_new_tokens=args.judge_max_new_tokens,
-            )
-        else:
-            for row in condition_rows:
-                row["judge"] = "keyword"
-                row["judge_label"] = "refusal" if row["refused"] else "no_refusal"
-                row["unsafe_raw"] = bool(row["attack_success"])
-                row["unsafe"] = bool(row["attack_success"])
-        all_compact_rows.extend(sanitize_judged_rows(condition_rows, args.layers))
-
-    points = pd.DataFrame(all_compact_rows)
+def analyze_points(args: argparse.Namespace, points: pd.DataFrame, model_id: str) -> None:
     write_text_free_csv(points, args.output_dir / "margin_points.csv")
     coherent = points[points["coherent"].astype(bool)].copy()
     score_columns = [f"s{layer}" for layer in args.layers] + ["s_mean"]
+    missing_scores = [score for score in score_columns if score not in coherent.columns]
+    if missing_scores:
+        raise ValueError(f"Missing score columns in margin points: {missing_scores}")
     cv_frames = []
     auc_rows = []
     tau_by_score = {}
@@ -564,7 +478,7 @@ def main() -> None:
         {
             **decision,
             "model": model_id,
-            "conditions": [condition.name for condition in conditions],
+            "conditions": sorted(str(condition) for condition in points["condition"].unique().tolist()),
             "layers": args.layers,
             "artifact_dir": args.artifact_dir,
             "n_points": int(len(points)),
@@ -572,6 +486,125 @@ def main() -> None:
         },
         args.output_dir / "decision.json",
     )
+
+
+def load_points_from_dirs(dirs: list[Path]) -> pd.DataFrame:
+    frames = []
+    for directory in dirs:
+        path = directory / "margin_points.csv"
+        if not path.exists():
+            print(f"[margin-calib] skipping directory without margin_points.csv: {directory}")
+            continue
+        frames.append(pd.read_csv(path))
+    if not frames:
+        raise FileNotFoundError("No margin_points.csv files found in merge dirs.")
+    return pd.concat(frames, ignore_index=True)
+
+
+def run_eval(args: argparse.Namespace, model_id: str) -> pd.DataFrame:
+    conditions = parse_conditions(args.conditions)
+    prompt_rows = load_prompt_rows(
+        file=args.harmful_file,
+        dataset=args.harmful_dataset,
+        config=args.harmful_config,
+        split=args.harmful_split,
+        column=args.harmful_column,
+        local_files_only=args.local_files_only,
+    )
+    prompts = prompt_rows[args.harmful_offset :]
+    prompts = prompts[: args.harmful_limit] if args.harmful_limit else prompts
+    directions = {
+        layer: load_refusal_direction(args.artifact_dir, model_id, layer, args.kr)
+        for layer in args.layers
+    }
+
+    all_compact_rows = []
+    for condition in conditions:
+        print(f"[margin-calib] running condition={condition.name}")
+        model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
+        if condition.pruner:
+            apply_pruning(model, tokenizer, condition.pruner, condition.sparsity, args.calib_max_length)
+        condition_rows = generate_condition_rows(
+            model,
+            tokenizer,
+            prompts,
+            model_id=model_id,
+            condition=condition,
+            layers=args.layers,
+            directions=directions,
+            max_length=args.max_length,
+            max_new_tokens=args.max_new_tokens,
+            response_ppl_threshold=args.response_ppl_threshold,
+        )
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if args.judge == "llamaguard":
+            judge_model_id = resolve_judge_model_id(load_config(args.config), args.judge_model)
+            condition_rows = judge_with_llamaguard(
+                condition_rows,
+                judge_model_id=judge_model_id,
+                local_files_only=args.local_files_only,
+                max_new_tokens=args.judge_max_new_tokens,
+            )
+        else:
+            for row in condition_rows:
+                row["judge"] = "keyword"
+                row["judge_label"] = "refusal" if row["refused"] else "no_refusal"
+                row["unsafe_raw"] = bool(row["attack_success"])
+                row["unsafe"] = bool(row["attack_success"])
+        all_compact_rows.extend(sanitize_judged_rows(condition_rows, args.layers))
+    return pd.DataFrame(all_compact_rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["eval_analyze", "eval", "analyze"], default="eval_analyze")
+    parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
+    parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
+    parser.add_argument("--output-dir", type=Path, default=Path("results/phase15_margin_calib"))
+    parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts/vpref_projection"))
+    parser.add_argument("--layers", type=parse_int_list, default=parse_int_list("24,28,32"))
+    parser.add_argument("--kr", type=int, default=1)
+    parser.add_argument("--conditions", default="dense wanda_45 wanda_50 wanda_55")
+    parser.add_argument("--harmful-file", type=Path)
+    parser.add_argument("--harmful-dataset", default="walledai/AdvBench")
+    parser.add_argument("--harmful-config")
+    parser.add_argument("--harmful-split", default="train")
+    parser.add_argument("--harmful-column", default="auto")
+    parser.add_argument("--harmful-offset", type=int, default=0)
+    parser.add_argument("--harmful-limit", type=int, default=128)
+    parser.add_argument("--max-length", type=int, default=1024)
+    parser.add_argument("--calib-max-length", type=int, default=1024)
+    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
+    parser.add_argument("--judge", choices=["keyword", "llamaguard"], default="llamaguard")
+    parser.add_argument("--judge-model")
+    parser.add_argument("--judge-max-new-tokens", type=int, default=16)
+    parser.add_argument("--restore-s-residual-counts", default="wanda_40:0 wanda_45:0 wanda_50:5 wanda_55:9")
+    parser.add_argument("--restore-s-residual-denominator", type=int, default=128)
+    parser.add_argument("--auc-threshold", type=float, default=0.85)
+    parser.add_argument("--readout-share-threshold", type=float, default=0.85)
+    parser.add_argument("--merge-dirs", nargs="*", type=Path, default=[])
+    parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--no-local-files-only", dest="local_files_only", action="store_false")
+    parser.set_defaults(local_files_only=True)
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    model_id = resolve_model_id(config, args.model)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.mode in {"eval", "eval_analyze"}:
+        points = run_eval(args, model_id)
+        write_text_free_csv(points, args.output_dir / "margin_points.csv")
+        if args.mode == "eval":
+            return
+    elif args.mode == "analyze":
+        points = load_points_from_dirs(args.merge_dirs)
+    else:
+        raise ValueError(args.mode)
+    analyze_points(args, points, model_id)
 
 
 if __name__ == "__main__":

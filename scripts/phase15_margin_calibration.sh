@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+MODE="${MODE:-eval_analyze}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/phase15_margin_calib}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts/vpref_projection}"
 LAYERS="${LAYERS:-24,28,32}"
@@ -30,8 +31,10 @@ RESTORE_S_RESIDUAL_DENOMINATOR="${RESTORE_S_RESIDUAL_DENOMINATOR:-128}"
 AUC_THRESHOLD="${AUC_THRESHOLD:-0.85}"
 READOUT_SHARE_THRESHOLD="${READOUT_SHARE_THRESHOLD:-0.85}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
+MERGE_DIRS="${MERGE_DIRS:-}"
 
 ARGS=(
+  --mode "$MODE"
   --config configs/base.yaml
   --model "$MODEL"
   --output-dir "$OUTPUT_DIR"
@@ -68,6 +71,9 @@ if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
   ARGS+=(--local-files-only)
 else
   ARGS+=(--no-local-files-only)
+fi
+if [[ -n "$MERGE_DIRS" ]]; then
+  ARGS+=(--merge-dirs $MERGE_DIRS)
 fi
 
 python -m casafety.margin_calibration "${ARGS[@]}"
