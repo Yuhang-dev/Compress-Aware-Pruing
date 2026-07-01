@@ -11,6 +11,7 @@ LOG_DIR="${LOG_DIR:-logs}"
 PPL_MAX_DELTA="${PPL_MAX_DELTA:-1.0}"
 BENIGN_REFUSAL_MAX_DELTA="${BENIGN_REFUSAL_MAX_DELTA:-0.05}"
 ASR_MIN_DROP="${ASR_MIN_DROP:-0.03}"
+COHERENT_MAX_DROP="${COHERENT_MAX_DROP:-0.02}"
 
 mkdir -p "$SHARD_ROOT" "$LOG_DIR"
 
@@ -43,4 +44,5 @@ python -m casafety.closed_form_readout_repair \
   --output-dir "$OUTPUT_DIR" \
   --ppl-max-delta "$PPL_MAX_DELTA" \
   --benign-refusal-max-delta "$BENIGN_REFUSAL_MAX_DELTA" \
+  --coherent-max-drop "$COHERENT_MAX_DROP" \
   --asr-min-drop "$ASR_MIN_DROP"
