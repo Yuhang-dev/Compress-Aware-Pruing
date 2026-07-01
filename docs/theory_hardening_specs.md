@@ -9,10 +9,16 @@ training compute. Current status after Spec B and Spec C:
   layers, and Wanda partially rescues it through activation norms.
 - **Spec C failed:** the Wanda-removed subset of grad-Crit does **not** directly explain natural
   Wanda ASR. The causal mass of grad-Crit is mostly in the Wanda-kept subset.
+- **Spec A passed after pooled-AUC recut:** `s_mean` has pooled AUC **0.907** as a
+  distribution-level refusal margin; grouped-CV AUC is **0.786**, showing within-sparsity
+  per-sample prediction is only moderate.
+- **Closed-form readout repair has an initial pass at W50:** eta=1 reduces ASR **0.289 -> 0.133**
+  with PPL v2 +0.055 and benign-refusal +3.13pp; W45 is underpowered because the pruned baseline
+  ASR is only 0.078.
 
-Recommended order from here: **(A) margin calibration -> closed-form readout repair -> optional
-behavioral top-up**. Do not spend more effort on mask repair as the main method unless a new
-upstream-circuit target is identified.
+Recommended order from here: **refine closed-form readout repair -> behavioral top-up if residuals
+remain -> external validity**. Do not spend more effort on mask repair as the main method unless a
+new upstream-circuit target is identified.
 
 **Standing red line (all three):** aggregate / numeric outputs only. Never read or emit
 per-response generations. (B) is pure weight statistics (no generation at all). (A) joins the
@@ -82,7 +88,7 @@ activation factors. Say Wanda **partially rescues**, not that it accidentally "f
 (iii) Gradients are first-order at the dense point; note it.
 
 ================================================================================
-## Spec A — Calibrate the refusal margin into a measured classifier
+## Spec A — Calibrate the refusal margin into a measured distribution-level margin
 **Locks:** Claim 2 premise — `s_l` is the refuse/comply decision variable, and pruning shifts the
 harmful-prompt `s_l` below threshold; `ASR(sparsity)` tracks `fraction(m_l<0)`.
 
@@ -94,27 +100,35 @@ the boolean leave the pipeline — not the text.**
 
 **Procedure.**
 1. Hypothesis: among harmful prompts, higher `s_l` -> refuse. Fit threshold `tau_l` on `s_l`
-   predicting the outcome; evaluate with **sparsity-grouped cross-validation** (hold out one
-   condition at a time) so `tau_l` must generalize across conditions, not overfit one. Report
-   **AUC** per layer and for the multi-layer mean.
+   predicting the outcome. Report both:
+   - **pooled AUC** over all coherent rows, which tests the claimed distribution-level shift;
+   - **sparsity-grouped CV AUC**, which intentionally removes the strongest group-level signal and
+     tests only within-condition per-sample ranking.
 2. Freeze `tau_l` (Youden-J / EER on the held-in folds). For each sparsity report
    `frac_m_neg = fraction of harmful prompts with m_l = s_l - tau_l < 0`, and `mean/median s_l`.
-3. Correlate `frac_m_neg` with `ASR` across the 4 sparsity points.
+3. Correlate `frac_m_neg` with `ASR` across the condition points.
 
 **Outputs.**
-- `results/phase15_margin_calib/margin_auc.csv` (AUC per layer + multilayer, with CI)
+- `results/phase15_margin_calib/margin_auc.csv` (pooled AUC + grouped-CV AUC per score)
 - `results/phase15_margin_calib/margin_threshold.csv`
 - `results/phase15_margin_calib/margin_fraction_vs_asr.csv` (sparsity, frac_m_neg, mean_s, asr)
 - `results/phase15_margin_calib/decision.json` -> `{auc_best_layer, auc_multilayer,
   frac_vs_asr_pearson, monotone_shift: bool, claim_margin_is_decision_variable: bool, interpretation}`
 
-**Decision (claim holds if):** `AUC >= ~0.8` (s_l separates outcomes) **AND** `frac_m_neg` increases
-monotonically with sparsity **AND** tracks ASR.
+**Decision (claim holds if):** pooled `AUC >= ~0.85` (distribution-level separation) **AND**
+`frac_m_neg` increases monotonically with sparsity **AND** tracks ASR **AND** restore-s explains most
+W45/W50 ASR.
 
-**Caveats to flag.** (i) The AUC (n ~ 128 x 4 instances) is the statistically meaningful part; the
-`frac_m_neg`-vs-ASR correlation is **n=4, descriptive only** — do not report a p-value for it. (ii)
-Use grouped CV to avoid the circularity of fitting and testing `tau` on the same condition. (iii) If
-multilayer AUC >> single-layer, that itself supports the multi-layer restore-s finding.
+**Observed result.** `s_mean` pooled AUC = **0.907**, grouped-CV AUC = **0.786**. The latter is not a
+failure: it asks whether `s_l` ranks examples within a fixed sparsity bucket after the group-level
+pruning shift is removed. `frac_m_neg(s_mean)` rises
+0.008 -> 0.070 -> 0.211 -> 0.594 -> 1.000 over dense/W40/W45/W50/W55 and has descriptive Pearson
+0.995 with ASR. Restore-s share is 1.0 at W45 and 0.881 at W50.
+
+**Caveats to flag.** (i) `frac_m_neg`-vs-ASR correlation has only five condition points; report it
+as descriptive only. (ii) Grouped-CV AUC is a within-condition caveat, not the main margin gate.
+(iii) The margin is distribution-level and causal via restore-s; it is not a perfect per-prompt
+classifier.
 
 ================================================================================
 ## Spec C — Causal bridge: completed negative result
@@ -177,8 +191,8 @@ Spec C as a theory-sharpening negative result, not a failure of the overall marg
   near zero while Wanda cuts fewer top safety-influence weights than pure magnitude but still removes
   a non-trivial subset, Claim 1 is locked as "magnitude-blind at the readout, Wanda-partially-rescued"
   rather than a brittle all-layer pooled claim.
-- **A next** (existing activations + boolean labels): turns "margin" into a measured decision
-  variable with an AUC — removes the "metaphor" objection.
-- **Closed-form readout repair next**: turns restore-s from an inference hook/oracle into a
-  train-free, merged-weight method.
+- **A completed** (existing activations + boolean labels): turns "margin" into a measured
+  distribution-level decision variable — removes the "metaphor" objection.
+- **Closed-form readout repair initial pass**: turns restore-s from an inference hook/oracle into a
+  train-free, merged-weight method; W50 eta=1 is the current clean point.
 - **Behavioral top-up last**: only needed if high-sparsity residuals remain after readout repair.

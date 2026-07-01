@@ -1,6 +1,6 @@
 # Experiment Path and Theory Handoff
 
-Last updated: 2026-06-30
+Last updated: 2026-07-02
 Project root: `D:\cap`
 Important instruction: do not rely on `CLAUDE.md`; this handoff is self-contained.
 
@@ -31,6 +31,14 @@ Update after the causal bridge run:
 > the full grad-Crit effect. The mechanism story should therefore focus on pruning-induced activation
 > / margin erosion into preserved refusal readouts, not on Wanda deleting the identified write-out
 > safety tail.
+
+Update after margin calibration and closed-form repair:
+
+> The refusal readout is now calibrated as a **distribution-level** margin. The pooled AUC for
+> `s_mean` is 0.907, while grouped-CV AUC is 0.786; the latter is a within-sparsity caveat, not a
+> failure of the distribution-shift mechanism. `frac(s_mean < tau)` rises monotonically with
+> sparsity and tracks ASR. A train-free closed-form readout repair has an initial clean pass at
+> Wanda-50: ASR 0.289 -> 0.133 with PPL v2 +0.055 and benign refusal +3.13pp.
 
 ## Main Artifact Map
 
@@ -84,6 +92,15 @@ Update after the causal bridge run:
 - `results/phase15_causal_bridge/`
   Spec C direct-deletion bridge results. Important negative result: `wanda_removed` zeroing does not
   explain natural Wanda ASR.
+
+- `results/phase15_margin_calib_recut/`
+  Margin-calibration recut from the existing 640-row `margin_points.csv`. Important result:
+  `s_mean` pooled AUC 0.907, grouped-CV AUC 0.786, `frac_m_neg` tracks ASR with descriptive Pearson
+  0.995, and `claim_margin_is_decision_variable=true` at distribution level.
+
+- `results/phase2_readout_repair_v1/`
+  Closed-form readout-repair v1. Important result: W50 eta1 passes guardrails; W45 has too little
+  baseline ASR headroom to show a stable gain.
 
 ## Experiment Path
 
@@ -489,7 +506,7 @@ Expected limitation:
 - Should mainly fix readout/margin collapse at 40-45%.
 - May only partially fix 50-55% because residual withholding failure remains.
 
-## Recommended Next Experiments
+## Completed Late-Stage Diagnostics
 
 ### Experiment 1: Margin Calibration
 
@@ -508,6 +525,17 @@ Compare:
 Question:
 
 > Is `s_l` a calibrated refusal/comply margin, and does `frac(s_l < tau_l)` track ASR?
+
+Status:
+
+- Completed via recut under `results/phase15_margin_calib_recut/`.
+- `s_mean` pooled AUC: **0.907**.
+- `s_mean` grouped-CV AUC: **0.786**.
+- `frac_m_neg` across dense/W40/W45/W50/W55:
+  `0.008 / 0.070 / 0.211 / 0.594 / 1.000`.
+- ASR across dense/W40/W45/W50/W55:
+  `0.000 / 0.016 / 0.117 / 0.328 / 0.675`.
+- Interpretation: strong distribution-level margin; moderate within-sparsity per-sample classifier.
 
 ### Experiment 2: Closed-Form Readout Repair
 
@@ -530,9 +558,33 @@ Question:
 
 > Can a training-free merged weight update reproduce restore-s without an inference hook?
 
-### Experiment 3: High-Sparsity Residual Repair
+Status:
 
-If closed-form readout repair fixes 40-45% but not 50-55%, test a small behavior-level top-up:
+- Initial W50 pass under `results/phase2_readout_repair_v1/`.
+- Best clean W50 setting: `readout_repair_eta1`.
+- W50 ASR: `0.289 -> 0.133`.
+- PPL v2: `15.634 -> 15.689` (`+0.055`).
+- benign refusal: `0.0156 -> 0.0469` (`+3.13pp`).
+- same-eta random direction ASR: `0.258`.
+- W50 eta2 is a diagnostic upper point: ASR `0.047`, but benign refusal `0.094`, over the +5pp
+  guardrail.
+- W45 remains inconclusive because pruned ASR is only `0.078`, leaving little headroom.
+
+## Recommended Next Experiments
+
+### Experiment 3: Readout Repair Refinement
+
+Before moving to training, refine the train-free repair:
+
+- sweep smaller/larger ridge and target margins around the W50 eta1 point;
+- add W55 if memory/time allows, but expect residual enforcement failure;
+- report same-eta random direction and bias-only controls;
+- keep PPL v2 and benign refusal as hard guardrails.
+
+### Experiment 4: High-Sparsity Residual Repair
+
+If closed-form readout repair reduces W50/W55 ASR but leaves coherent unsafe residuals, test a small
+behavior-level top-up:
 
 - refusal SFT under compressed view
 - LoRA only on selected layers

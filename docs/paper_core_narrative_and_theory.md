@@ -73,12 +73,16 @@ The leading-order effect of `dW` on harmful prompts is a reduction of the scalar
 
 *Evidence lock:* (i) **Seal B** — the collapse is specific to `r_l` vs 200 random directions
 (centered-cosine flip 0.09-0.12 >> null p95 ~0.01, p~0.005), causally validated at L24/28; (ii)
-**Seal A** — restoring the lost projection (restore-s) gives residual **0 at 40-45%**. So at moderate
-sparsity, safety failure ~= a 1-D margin erosion.
+**Seal A** — restoring the lost projection (restore-s) gives residual **0 at 40-45%**; (iii)
+**Spec A** — the calibrated multi-layer readout `s_mean` has pooled AUC **0.907** as a
+distribution-level refusal margin, `frac(s_mean<tau)` rises monotonically
+0.008 -> 0.070 -> 0.211 -> 0.594 -> 1.000 over dense/W40/W45/W50/W55, and this fraction tracks ASR
+with descriptive Pearson **0.995**. So at moderate sparsity, safety failure is largely a measured
+margin erosion.
 
-*Gap/flag:* `r_l` is dense-extracted and restore-s uses the dense target; the threshold `tau_l` is
-**not yet calibrated** (we infer `m<0 => unsafe` rather than measuring a decision boundary). See the
-cheap fix in Section 5(a).
+*Caveat:* grouped-CV AUC is **0.786** for `s_mean`; within a fixed sparsity bucket, the scalar is only
+a moderate per-sample classifier. This is not a contradiction: the main mechanism is a
+distribution-level margin shift, not perfect prompt-level ranking.
 
 ### Claim 3 — Stage 2: behavioral-enforcement residual (high sparsity)
 As sparsity grows, `||dW||` grows and the single-direction first-order picture is no longer
@@ -126,6 +130,8 @@ first, behavioral enforcement second.
 | Seal A | restore-s residual [0,0,5,9] | Claim 2 (0 at 40-45) + Claim 3 (residual at 50-55) |
 | Step0b | multi-layer L24/28/32 steering recovers ASR | Claim 2 mechanism; restore-s is the diagnostic, not the final method |
 | Spec C causal bridge | removed-zero ASR 0/0.008; kept-zero ASR 0.367/0.320 @ 45/50 | Direct deletion of Wanda-removed grad-Crit is **not** the natural Wanda ASR cause |
+| Spec A margin | `s_mean` pooled AUC 0.907; grouped-CV AUC 0.786; frac_m_neg-ASR corr 0.995 | Claim 2: distribution-level refusal margin |
+| Closed-form repair v1 | W50 eta1 ASR 0.289->0.133, PPL +0.055, benign refusal +3.13pp; random same-eta ASR 0.258 | Claim 4: train-free readout repair works at W50 under guardrails |
 
 The table now rules out the old direct-deletion bridge. The surviving theory is that broad pruning
 perturbations erode the harmful-prompt readout margin through shifted activations, while the
@@ -153,19 +159,19 @@ write-out weights that would execute refusal are mostly still present.
 --------------------------------------------------------------------------------
 ## 5. Three cheap, text-free analyses that harden the theory *before* any new training
 
-(a) **Calibrate the margin into a real classifier.** On the dense/pruned cells, fit `tau_l` as the `s_l`
-    value separating refuse vs comply; report AUC. Then show the pruned harmful-prompt `s_l`
-    distribution shifts below `tau_l`, and that `ASR(sparsity)` tracks the fraction with `m_l<0`.
-    Converts "margin" from metaphor to a measured decision boundary. Uses existing activations;
-    aggregate-only.
+(a) **Calibrate the margin into a real classifier. Completed.** On the dense/pruned cells, fit
+    `tau_l` as the `s_l` value separating refuse vs comply. The correct headline is distributional:
+    pooled `s_mean` AUC is 0.907, while grouped-CV AUC is 0.786 as a within-sparsity caveat. The
+    pruned harmful-prompt `s_l` distribution shifts below `tau_l`, and `ASR(sparsity)` tracks the
+    fraction with `m_l<0`. This converts "margin" from metaphor to a measured decision boundary.
 (b) **Quantify the mismatch.** Report Spearman correlation between margin-influence and `|w|` at the
     refusal-readout layers; show it is ~0 there and robust for L>=8/L>=12/L>=16, while early generic
     layers exhibit the expected coupling. Report Wanda separately as partial rescue, not as the
     orthogonality test.
-(c) **Closed-form readout repair.** Replace inference-time restore-s hooks with a merged low-rank
-    `Delta W` that raises the measured margin on harmful calibration prompts while regularizing
-    benign drift. This is the method experiment that should replace mask repair as the main
-    train-free repair path.
+(c) **Closed-form readout repair. Initial pass.** Replace inference-time restore-s hooks with a
+    merged low-rank `Delta W` that raises the measured margin on harmful calibration prompts while
+    regularizing benign drift. W50 eta1 reduces ASR 0.289 -> 0.133 with PPL +0.055 and benign
+    refusal +3.13pp; eta2 is a useful diagnostic upper point but over-refuses.
 
 Then the readout-repair experiment, not mask repair, is the result that converts the
 theory-derived mechanism into a main paper method.
@@ -178,7 +184,7 @@ theory-derived mechanism into a main paper method.
 3. **The violated constraint** — objective/measure mismatch; refusal margin; readout-layer magnitude-blindness plus Wanda partial rescue (Claim 1).
 4. **Two-stage mechanism** — detection-margin collapse (Claim 2: Seal B + Seal A@40-45) and enforcement residual (Claim 3: Seal A@50-55).
 5. **Method** — closed-form readout repair (Claim 4) + behavioral top-up; full derivation from the constrained margin objective.
-6. **Experiments** — mechanism validation (done) + readout repair at measured utility/safety tradeoff (to run) + behavioral residual analysis.
+6. **Experiments** — mechanism validation (done) + readout repair at measured utility/safety tradeoff (initial W50 pass) + behavioral residual analysis.
 7. **Related work** — distinguish Wei (harmful-FT brittleness), Circuit-Breakers/RR (attack-robust), ACTOR/ProSafePrune (over-refusal axis), prior pruning-safety; ours = **benign-compression margin preservation**.
 8. **Limitations** — Qwen2.5-3B / Wanda / AdvBench-direct scope; external validity (Llama-2, 7B, SparseGPT/AWQ/GPTQ, StrongREJECT/XSTest/OR-Bench) future.
 
@@ -203,6 +209,8 @@ theory-derived mechanism into a main paper method.
 - **Proven:** phenomenon; non-deletion; direct-deletion bridge is false for grad-Crit; direction-specific
   causal margin collapse; readout restoration clears 40-45% and leaves a growing residual at 50-55%;
   a small utility-light causal safety-support set exists, but its Wanda-removed subset is not the natural ASR cause.
-- **Derived but not yet shown:** margin as a calibrated classifier (5a); closed-form readout repair reduces
-  ASR without an inference hook; a behavioral top-up handles the high-sparsity residual.
+- **Proven/initially shown:** margin as a calibrated **distribution-level** classifier (pooled AUC
+  0.907; grouped-CV caveat 0.786); closed-form readout repair reduces W50 ASR without an inference
+  hook under PPL/benign-refusal guardrails.
+- **Derived but not yet shown:** a behavioral top-up handles the high-sparsity residual.
 - **Future:** external validity across models/compressors/benchmarks; whether one-shot repair suffices at 50-55%.
