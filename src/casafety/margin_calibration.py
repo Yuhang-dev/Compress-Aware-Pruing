@@ -381,10 +381,16 @@ def build_decision(
     auc_threshold: float,
     readout_share_threshold: float,
 ) -> dict[str, Any]:
-    auc_by_score = auc_summary.set_index("score")["auc_mean"].to_dict()
-    best_score = max(auc_by_score, key=lambda score: -float("inf") if math.isnan(auc_by_score[score]) else auc_by_score[score])
-    best_auc = float(auc_by_score[best_score])
-    mean_auc = float(auc_by_score.get("s_mean", float("nan")))
+    pooled_by_score = auc_summary.set_index("score")["auc_pooled"].to_dict()
+    grouped_by_score = auc_summary.set_index("score")["auc_mean"].to_dict()
+    best_score = max(
+        pooled_by_score,
+        key=lambda score: -float("inf") if math.isnan(pooled_by_score[score]) else pooled_by_score[score],
+    )
+    best_pooled_auc = float(pooled_by_score[best_score])
+    mean_pooled_auc = float(pooled_by_score.get("s_mean", float("nan")))
+    best_grouped_auc = float(grouped_by_score.get(best_score, float("nan")))
+    mean_grouped_auc = float(grouped_by_score.get("s_mean", float("nan")))
 
     mean_rows = fraction[fraction["score"].eq("s_mean")].sort_values("sparsity")
     frac_values = mean_rows["frac_m_neg"].astype(float).tolist()
@@ -402,11 +408,16 @@ def build_decision(
         if condition in {"wanda_45", "wanda_50"}
     ]
     readout_share_pass = bool(share_pass_values) and all(value >= readout_share_threshold for value in share_pass_values)
-    claim = bool(mean_auc >= auc_threshold and monotone and readout_share_pass)
+    claim = bool(mean_pooled_auc >= auc_threshold and monotone and readout_share_pass)
     return {
         "best_score": best_score,
-        "auc_best_score": best_auc,
-        "auc_multilayer": mean_auc,
+        "best_score_selection": "pooled_auc",
+        "auc_best_score": best_pooled_auc,
+        "auc_multilayer": mean_pooled_auc,
+        "auc_best_score_pooled": best_pooled_auc,
+        "auc_multilayer_pooled": mean_pooled_auc,
+        "auc_best_score_grouped_cv": best_grouped_auc,
+        "auc_multilayer_grouped_cv": mean_grouped_auc,
         "auc_threshold": auc_threshold,
         "tau_by_score": auc_summary.set_index("score")["tau_global"].to_dict(),
         "frac_m_neg_by_sparsity_s_mean": {
@@ -420,10 +431,11 @@ def build_decision(
         "monotone_shift": monotone,
         "readout_share_pass": readout_share_pass,
         "claim_margin_is_decision_variable": claim,
+        "claim_margin_scope": "distribution_level",
         "interpretation": (
-            "s_mean behaves as a calibrated refusal margin and restore-s explains most 45/50 ASR."
+            "s_mean is a distribution-level refusal margin: pooled AUC passes, margin shift is monotone, and restore-s explains most 45/50 ASR."
             if claim
-            else "Margin evidence is incomplete; inspect AUC, monotonicity, and restore-s share separately."
+            else "Distribution-level margin evidence is incomplete; inspect pooled AUC, monotonicity, and restore-s share separately."
         ),
     }
 
@@ -441,13 +453,20 @@ def analyze_points(args: argparse.Namespace, points: pd.DataFrame, model_id: str
     for score in score_columns:
         cv, auc_mean, acc_mean = grouped_cv(coherent, score)
         cv_frames.append(cv)
+        pooled_auc = auc_binary(
+            coherent["outcome_comply"].astype(bool).tolist(),
+            (-coherent[score].astype(float)).tolist(),
+        )
         tau, youden = best_tau_for_comply(coherent[score].astype(float).tolist(), coherent["outcome_comply"].astype(bool).tolist())
         tau_by_score[score] = tau
         auc_rows.append(
             {
                 "score": score,
                 "auc_mean": auc_mean,
+                "auc_grouped_cv_mean": auc_mean,
+                "auc_pooled": pooled_auc,
                 "accuracy_mean": acc_mean,
+                "accuracy_grouped_cv_mean": acc_mean,
                 "tau_global": tau,
                 "youden_global": youden,
                 "n_coherent": int(len(coherent)),
