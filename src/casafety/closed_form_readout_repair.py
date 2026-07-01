@@ -380,6 +380,7 @@ def install_restore_s_hooks(
     layers: list[int],
     directions: dict[int, torch.Tensor],
     target_by_layer: dict[int, float],
+    records: dict[int, list[float]] | None = None,
 ) -> list[Any]:
     handles = []
     decoder = decoder_layers(model)
@@ -391,12 +392,18 @@ def install_restore_s_hooks(
         def make_hook(direction_cpu: torch.Tensor, target_value: float):
             def hook(_module, _inputs, output):
                 hidden = output[0] if isinstance(output, tuple) else output
-                direction = direction_cpu.to(device=hidden.device, dtype=hidden.dtype)
+                direction_patch = direction_cpu.to(device=hidden.device, dtype=hidden.dtype)
+                direction_measure = direction_cpu.to(device=hidden.device, dtype=torch.float32)
                 last = hidden[:, -1, :]
-                current = (last.float() * direction.float()).sum(dim=-1, keepdim=True).to(hidden.dtype)
-                delta = hidden.new_tensor(target_value) - current
+                current = (last.float() * direction_measure).sum(dim=-1, keepdim=True)
+                denom = (direction_patch.float() * direction_measure).sum().clamp_min(1e-12)
+                delta = ((hidden.new_tensor(target_value).float() - current) / denom).to(hidden.dtype)
                 patched = hidden.clone()
-                patched[:, -1, :] = last + delta * direction.view(1, -1)
+                patched_last = last + delta * direction_patch.view(1, -1)
+                patched[:, -1, :] = patched_last
+                if records is not None:
+                    post = (patched_last[0].float() * direction_measure).sum().item()
+                    records.setdefault(layer, []).append(float(post))
                 if isinstance(output, tuple):
                     return (patched, *output[1:])
                 return patched
@@ -584,6 +591,7 @@ def generate_harm_rows(
         if progress_every and (eval_order == 0 or (eval_order + 1) % progress_every == 0):
             print(f"[readout-repair] {condition.name}/{repair.name} harm {eval_order + 1}/{total}")
         hooks = []
+        restore_records: dict[int, list[float]] = {}
         restore_error = float("nan")
         if repair.kind == "restore_s":
             if restore_targets is None or prompt_id not in restore_targets:
@@ -593,6 +601,7 @@ def generate_harm_rows(
                 layers=layers,
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
+                records=restore_records,
             )
         try:
             readouts = collect_prompt_readouts(
@@ -604,6 +613,11 @@ def generate_harm_rows(
                 max_length=max_length,
             )
             if repair.kind == "restore_s" and restore_targets is not None:
+                for layer in layers:
+                    if restore_records.get(layer):
+                        readouts[f"s{layer}"] = float(restore_records[layer][-1])
+                if layers:
+                    readouts["s_mean"] = float(sum(readouts[f"s{layer}"] for layer in layers) / len(layers))
                 restore_error = max(
                     abs(float(readouts[f"s{layer}"]) - float(restore_targets[prompt_id][layer]))
                     for layer in layers
