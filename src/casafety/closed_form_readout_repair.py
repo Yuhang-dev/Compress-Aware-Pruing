@@ -389,7 +389,7 @@ def install_restore_s_hooks(
         r_hat = directions[layer].float()
         target = float(target_by_layer[layer])
 
-        def make_hook(direction_cpu: torch.Tensor, target_value: float):
+        def make_hook(record_layer: int, direction_cpu: torch.Tensor, target_value: float):
             def hook(_module, _inputs, output):
                 hidden = output[0] if isinstance(output, tuple) else output
                 direction_patch = direction_cpu.to(device=hidden.device, dtype=hidden.dtype)
@@ -403,14 +403,14 @@ def install_restore_s_hooks(
                 patched[:, -1, :] = patched_last
                 if records is not None:
                     post = (patched_last[0].float() * direction_measure).sum().item()
-                    records.setdefault(layer, []).append(float(post))
+                    records.setdefault(record_layer, []).append(float(post))
                 if isinstance(output, tuple):
                     return (patched, *output[1:])
                 return patched
 
             return hook
 
-        handles.append(module.register_forward_hook(make_hook(r_hat, target)))
+        handles.append(module.register_forward_hook(make_hook(layer, r_hat, target)))
     return handles
 
 
