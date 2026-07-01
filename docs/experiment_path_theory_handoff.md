@@ -1,7 +1,7 @@
 # Experiment Path and Theory Handoff
 
-Last updated: 2026-06-30  
-Project root: `D:\cap`  
+Last updated: 2026-06-30
+Project root: `D:\cap`
 Important instruction: do not rely on `CLAUDE.md`; this handoff is self-contained.
 
 ## Purpose
@@ -14,10 +14,10 @@ The current project studies why pruning/compression breaks safety alignment in i
 
 The evidence now supports a two-stage mechanism:
 
-1. **Moderate sparsity causes a harm-detection/refusal-readout collapse.**  
+1. **Moderate sparsity causes a harm-detection/refusal-readout collapse.**
    Pruning lowers a refusal-direction score on harmful prompts. This collapse is specific to the harmful-request/refusal direction, not a generic movement along random representation directions.
 
-2. **Higher sparsity introduces a residual withholding failure.**  
+2. **Higher sparsity introduces a residual withholding failure.**
    Restoring the refusal readout eliminates failures at 40-45% Wanda sparsity, but residual unsafe outputs remain and grow at 50-55%. This suggests that high sparsity also weakens the behavior-level withholding/execution stage.
 
 The safest wording is:
@@ -36,52 +36,52 @@ Update after the causal bridge run:
 
 ### Project Docs
 
-- `docs/phase1_gate1_findings.md`  
+- `docs/phase1_gate1_findings.md`
   Earlier Gate-1 findings.
 
-- `docs/vpref_projection_experiment_spec.md`  
+- `docs/vpref_projection_experiment_spec.md`
   Initial refusal-projection experiment spec.
 
-- `docs/vpref_specificity_followup_spec.md`  
+- `docs/vpref_specificity_followup_spec.md`
   Specificity/null-distribution follow-up spec.
 
-- `docs/step0_restore_s_oracle_spec.md`  
+- `docs/step0_restore_s_oracle_spec.md`
   Restore-s oracle spec.
 
-- `docs/step0b_restore_s_spec.md`  
+- `docs/step0b_restore_s_spec.md`
   Step0b restore-s refinement spec.
 
-- `docs/mechanism_seal_spec.md`  
+- `docs/mechanism_seal_spec.md`
   Final mechanism sealing spec: A residual sparsity sweep and B specificity strengthening.
 
-- `docs/spec_a_margin_calibration.md`  
+- `docs/spec_a_margin_calibration.md`
   Next-priority spec for calibrating `s_l` into a real refusal/comply margin.
 
-- `docs/closed_form_readout_repair_spec.md`  
+- `docs/closed_form_readout_repair_spec.md`
   New main-method spec: train-free closed-form low-rank readout repair that replaces the old
   mask-repair direction.
 
-- `paper/aaai27/main.tex`  
+- `paper/aaai27/main.tex`
   Current AAAI draft.
 
-- `paper/aaai27/ccfa-review-reports/2026-06-29-compression-aware-safety-repair-aaai-conference-review.md`  
+- `paper/aaai27/ccfa-review-reports/2026-06-29-compression-aware-safety-repair-aaai-conference-review.md`
   Internal review of the current draft.
 
 ### Key Result Directories
 
-- `results/phase1_v2/`  
+- `results/phase1_v2/`
   Crit v2 selection, PPL v2, and Crit ablation results.
 
-- `results/phase15_vpref_projection/`  
+- `results/phase15_vpref_projection/`
   Refusal projection, specificity, restore-s, and final mechanism-seal results.
 
-- `results/phase15_mechanism_seal_specificity/`  
+- `results/phase15_mechanism_seal_specificity/`
   The final B run with `RUN_VALIDATION=1`; includes `vpref_validation.csv`.
 
-- `results/phase15_step0b_parallel_merged/`  
+- `results/phase15_step0b_parallel_merged/`
   Merged Step0b restore-s run.
 
-- `results/phase15_causal_bridge/`  
+- `results/phase15_causal_bridge/`
   Spec C direct-deletion bridge results. Important negative result: `wanda_removed` zeroing does not
   explain natural Wanda ASR.
 
