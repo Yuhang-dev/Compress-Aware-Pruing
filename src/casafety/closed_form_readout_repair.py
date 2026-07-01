@@ -592,7 +592,8 @@ def generate_harm_rows(
             print(f"[readout-repair] {condition.name}/{repair.name} harm {eval_order + 1}/{total}")
         hooks = []
         restore_records: dict[int, list[float]] = {}
-        restore_error = float("nan")
+        restore_hook_error = float("nan")
+        restore_readout_error = float("nan")
         if repair.kind == "restore_s":
             if restore_targets is None or prompt_id not in restore_targets:
                 raise KeyError(f"Missing restore-s dense target for prompt_id={prompt_id}")
@@ -613,12 +614,17 @@ def generate_harm_rows(
                 max_length=max_length,
             )
             if repair.kind == "restore_s" and restore_targets is not None:
+                independent_readouts = {f"s{layer}": float(readouts[f"s{layer}"]) for layer in layers}
+                restore_readout_error = max(
+                    abs(float(independent_readouts[f"s{layer}"]) - float(restore_targets[prompt_id][layer]))
+                    for layer in layers
+                )
                 for layer in layers:
                     if restore_records.get(layer):
                         readouts[f"s{layer}"] = float(restore_records[layer][-1])
                 if layers:
                     readouts["s_mean"] = float(sum(readouts[f"s{layer}"] for layer in layers) / len(layers))
-                restore_error = max(
+                restore_hook_error = max(
                     abs(float(readouts[f"s{layer}"]) - float(restore_targets[prompt_id][layer]))
                     for layer in layers
                 )
@@ -659,7 +665,9 @@ def generate_harm_rows(
             "pruned_layers": pruned_layers,
             "tau_s_mean": tau_s_mean,
             "m_neg_s_mean": readouts["s_mean"] < tau_s_mean,
-            "restore_s_abs_error_max": restore_error,
+            "restore_s_abs_error_max": restore_hook_error,
+            "restore_s_hook_error_max": restore_hook_error,
+            "restore_s_readout_error_max": restore_readout_error,
         }
         row.update(readouts)
         row.update(update_stats)
@@ -765,6 +773,8 @@ def summarize(
             response_tokens_mean=("response_tokens", "mean"),
             pruned_layers=("pruned_layers", "max"),
             restore_s_abs_error_max=("restore_s_abs_error_max", "max"),
+            restore_s_hook_error_max=("restore_s_hook_error_max", "max"),
+            restore_s_readout_error_max=("restore_s_readout_error_max", "max"),
         )
         .reset_index()
     )
