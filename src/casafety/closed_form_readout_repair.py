@@ -381,6 +381,7 @@ def install_restore_s_hooks(
     directions: dict[int, torch.Tensor],
     target_by_layer: dict[int, float],
     records: dict[int, list[float]] | None = None,
+    downstream_records: dict[int, list[float]] | None = None,
 ) -> list[Any]:
     handles = []
     decoder = decoder_layers(model)
@@ -411,6 +412,25 @@ def install_restore_s_hooks(
             return hook
 
         handles.append(module.register_forward_hook(make_hook(layer, r_hat, target)))
+        if downstream_records is not None and layer + 1 < len(decoder):
+            next_module = decoder[layer + 1]
+
+            def make_downstream_hook(record_layer: int, direction_cpu: torch.Tensor):
+                def hook(_module, inputs):
+                    if not inputs:
+                        return None
+                    hidden = inputs[0]
+                    if not isinstance(hidden, torch.Tensor) or hidden.ndim != 3 or hidden.shape[1] < 1:
+                        return None
+                    direction = direction_cpu.to(device=hidden.device, dtype=torch.float32)
+                    last = hidden[:, -1, :]
+                    value = (last[0].float() * direction).sum().item()
+                    downstream_records.setdefault(record_layer, []).append(float(value))
+                    return None
+
+                return hook
+
+            handles.append(next_module.register_forward_pre_hook(make_downstream_hook(layer, r_hat)))
     return handles
 
 
@@ -592,8 +612,10 @@ def generate_harm_rows(
             print(f"[readout-repair] {condition.name}/{repair.name} harm {eval_order + 1}/{total}")
         hooks = []
         restore_records: dict[int, list[float]] = {}
+        restore_downstream_records: dict[int, list[float]] = {}
         restore_hook_error = float("nan")
         restore_readout_error = float("nan")
+        restore_downstream_error = float("nan")
         if repair.kind == "restore_s":
             if restore_targets is None or prompt_id not in restore_targets:
                 raise KeyError(f"Missing restore-s dense target for prompt_id={prompt_id}")
@@ -603,6 +625,7 @@ def generate_harm_rows(
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
                 records=restore_records,
+                downstream_records=restore_downstream_records,
             )
         try:
             readouts = collect_prompt_readouts(
@@ -619,6 +642,13 @@ def generate_harm_rows(
                     abs(float(independent_readouts[f"s{layer}"]) - float(restore_targets[prompt_id][layer]))
                     for layer in layers
                 )
+                downstream_errors = [
+                    abs(float(restore_downstream_records[layer][-1]) - float(restore_targets[prompt_id][layer]))
+                    for layer in layers
+                    if restore_downstream_records.get(layer)
+                ]
+                if downstream_errors:
+                    restore_downstream_error = max(downstream_errors)
                 for layer in layers:
                     if restore_records.get(layer):
                         readouts[f"s{layer}"] = float(restore_records[layer][-1])
@@ -668,6 +698,7 @@ def generate_harm_rows(
             "restore_s_abs_error_max": restore_hook_error,
             "restore_s_hook_error_max": restore_hook_error,
             "restore_s_readout_error_max": restore_readout_error,
+            "restore_s_downstream_error_max": restore_downstream_error,
         }
         row.update(readouts)
         row.update(update_stats)
@@ -775,6 +806,7 @@ def summarize(
             restore_s_abs_error_max=("restore_s_abs_error_max", "max"),
             restore_s_hook_error_max=("restore_s_hook_error_max", "max"),
             restore_s_readout_error_max=("restore_s_readout_error_max", "max"),
+            restore_s_downstream_error_max=("restore_s_downstream_error_max", "max"),
         )
         .reset_index()
     )
