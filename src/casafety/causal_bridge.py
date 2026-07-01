@@ -7,9 +7,11 @@ import hashlib
 import json
 import math
 import os
+import random
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 from torch import nn
@@ -24,13 +26,13 @@ from .crit_selection_v2 import (
 )
 from .models import model_slug, resolve_judge_model_id, resolve_model_id
 from .phase0_smoke_eval import (
-    apply_pruning,
     classify_outcome,
     collect_wanda_input_norms,
     generate_answer,
     is_refusal,
     judge_with_llamaguard,
     lexical_coherence_stats,
+    target_linear_modules,
 )
 from .ppl_eval_v2 import eval_ppl_on_windows, prepare_ppl_inputs
 from .pruners import compute_mask
@@ -41,6 +43,26 @@ os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 TEXT_COLUMNS = {"prompt", "response", "text", "instruction", "output", "completion"}
+
+
+def configure_reproducibility(seed: int, deterministic: bool) -> None:
+    random.seed(seed)
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except TypeError:
+            torch.use_deterministic_algorithms(True)
 
 
 def parse_float_list(text: str) -> list[float]:
@@ -80,12 +102,29 @@ def write_text_free_csv(df: pd.DataFrame, path: Path) -> None:
     print(f"[causal-bridge] wrote {path}")
 
 
+def write_raw_text_jsonl(rows: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, default=json_default) + "\n")
+    print(f"[causal-bridge] wrote raw text rows to {path}")
+
+
 def sanitize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sanitized = []
     for row in rows:
         item = {key: value for key, value in row.items() if key not in TEXT_COLUMNS}
         sanitized.append(item)
     return sanitized
+
+
+def prompts_hash(prompts: list[str]) -> str:
+    digest = hashlib.sha256()
+    for prompt in prompts:
+        encoded = prompt.encode("utf-8", errors="replace")
+        digest.update(len(encoded).to_bytes(8, byteorder="little", signed=False))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 def indices_hash(indices: dict[str, torch.Tensor]) -> str:
@@ -284,6 +323,27 @@ def compute_wanda_removed_kept(
     return removed, kept
 
 
+def apply_wanda_pruning_with_prompts(
+    model,
+    tokenizer,
+    prompts: list[str],
+    sparsity: float,
+    calib_max_length: int,
+) -> int:
+    input_norms = collect_wanda_input_norms(model, tokenizer, prompts, calib_max_length)
+    pruned_layers = 0
+    for name, module in target_linear_modules(model):
+        input_norm = input_norms.get(name)
+        if input_norm is None:
+            raise RuntimeError(f"Missing Wanda activation stats for {name}")
+        stats = {"input_norm": input_norm.to(module.weight.device)}
+        mask = compute_mask(module.weight.data, stats, sparsity, "wanda")
+        with torch.no_grad():
+            module.weight.mul_(mask.to(module.weight.device, dtype=module.weight.dtype))
+        pruned_layers += 1
+    return pruned_layers
+
+
 def count_by_module(indices: dict[str, torch.Tensor]) -> dict[str, int]:
     return {name: int(idx.numel()) for name, idx in sorted(indices.items())}
 
@@ -350,6 +410,7 @@ def build_cells(sparsities: list[float]) -> list[dict[str, Any]]:
 
 
 def run_prepare(args: argparse.Namespace) -> None:
+    configure_reproducibility(args.seed, args.deterministic)
     config = load_config(args.config)
     model_id = resolve_model_id(config, args.model)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -362,6 +423,7 @@ def run_prepare(args: argparse.Namespace) -> None:
         raise ValueError(f"No target modules found for suffixes={args.target_suffixes}")
     crit_indices = filter_indices_to_modules(crit_indices_raw, modules)
     calib_prompts = load_calib_prompts(args)
+    calib_digest = prompts_hash(calib_prompts)
     input_norms = collect_wanda_input_norms(model, tokenizer, calib_prompts, args.calib_max_length)
 
     sets: dict[str, dict[str, torch.Tensor]] = {"full_gradcrit": crit_indices}
@@ -417,6 +479,9 @@ def run_prepare(args: argparse.Namespace) -> None:
             },
             "target_suffixes": args.target_suffixes,
             "sparsities": args.sparsities,
+            "calib_count": len(calib_prompts),
+            "calib_hash": calib_digest,
+            "calib_max_length": args.calib_max_length,
             "module_shapes": module_shapes,
             "sets": sets,
             "cells": cells,
@@ -435,6 +500,10 @@ def run_prepare(args: argparse.Namespace) -> None:
             "seed": args.seed,
             "prep_workers": args.prep_workers,
             "magmatch_bins": args.magmatch_bins,
+            "deterministic": args.deterministic,
+            "calib_count": len(calib_prompts),
+            "calib_hash": calib_digest,
+            "calib_max_length": args.calib_max_length,
             "full_gradcrit_count": index_count(crit_indices),
             "full_gradcrit_hash": indices_hash(crit_indices),
             "sets": set_records,
@@ -555,6 +624,7 @@ def summarize_rows(rows: list[dict[str, Any]], ppl_by_condition: dict[str, tuple
 
 
 def run_eval(args: argparse.Namespace) -> None:
+    configure_reproducibility(args.seed, args.deterministic)
     config = load_config(args.config)
     model_id = resolve_model_id(config, args.model)
     index_payload = torch.load(args.index_set_path, map_location="cpu")
@@ -571,6 +641,20 @@ def run_eval(args: argparse.Namespace) -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prompts = load_harmful_prompts(args, offset=args.harmful_offset, limit=args.harmful_limit)
+    calib_prompts = load_calib_prompts(args)
+    expected_calib_hash = str(index_payload.get("calib_hash", ""))
+    current_calib_hash = prompts_hash(calib_prompts)
+    if expected_calib_hash and current_calib_hash != expected_calib_hash:
+        raise ValueError(
+            "Calibration prompts differ from frozen index manifest: "
+            f"expected={expected_calib_hash} current={current_calib_hash}"
+        )
+    expected_calib_max_length = index_payload.get("calib_max_length")
+    if expected_calib_max_length is not None and int(expected_calib_max_length) != int(args.calib_max_length):
+        raise ValueError(
+            "Calibration max length differs from frozen index manifest: "
+            f"expected={expected_calib_max_length} current={args.calib_max_length}"
+        )
     all_rows: list[dict[str, Any]] = []
     ppl_by_condition: dict[str, tuple[float, float, int]] = {}
     full_gradcrit_count = index_count(sets["full_gradcrit"])
@@ -580,7 +664,13 @@ def run_eval(args: argparse.Namespace) -> None:
         model, tokenizer = load_model_and_tokenizer_for_bridge(model_id, args.local_files_only)
         pruned_layers = 0
         if cell["pruner"] == "wanda":
-            pruned_layers = apply_pruning(model, tokenizer, "wanda", float(cell["sparsity"]), args.calib_max_length)
+            pruned_layers = apply_wanda_pruning_with_prompts(
+                model,
+                tokenizer,
+                calib_prompts,
+                float(cell["sparsity"]),
+                args.calib_max_length,
+            )
 
         modules = selected_linear_modules(model, index_payload["target_suffixes"])
         modules_by_name = dict(modules)
@@ -654,6 +744,8 @@ def run_eval(args: argparse.Namespace) -> None:
     details = pd.DataFrame(sanitize_rows(all_rows))
     write_text_free_csv(summary, args.output_dir / "causal_bridge_summary.csv")
     write_text_free_csv(details, args.output_dir / "causal_bridge_details.csv")
+    if args.save_raw_text:
+        write_raw_text_jsonl(all_rows, args.output_dir / "causal_bridge_raw_text_rows.jsonl")
     write_json(
         {
             "model": model_id,
@@ -662,6 +754,10 @@ def run_eval(args: argparse.Namespace) -> None:
             "shard_index": args.shard_index,
             "num_shards": args.num_shards,
             "rows": len(all_rows),
+            "deterministic": args.deterministic,
+            "calib_hash": current_calib_hash,
+            "calib_count": len(calib_prompts),
+            "save_raw_text": args.save_raw_text,
         },
         args.output_dir / "shard_manifest.json",
     )
@@ -764,11 +860,14 @@ def run_merge(args: argparse.Namespace) -> None:
         summary_path = shard_dir / "causal_bridge_summary.csv"
         details_path = shard_dir / "causal_bridge_details.csv"
         if not summary_path.exists():
-            raise FileNotFoundError(summary_path)
+            print(f"[causal-bridge] skipping shard without summary: {shard_dir}")
+            continue
         if not details_path.exists():
             raise FileNotFoundError(details_path)
         summary_frames.append(pd.read_csv(summary_path))
         detail_frames.append(pd.read_csv(details_path))
+    if not summary_frames:
+        raise FileNotFoundError(f"No shard summaries found under {args.shard_root}")
     summary = pd.concat(summary_frames, ignore_index=True)
     details = pd.concat(detail_frames, ignore_index=True)
     summary = summary.sort_values(["sparsity", "cell_type", "condition"]).reset_index(drop=True)
@@ -818,9 +917,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppl-sample-windows", type=int, default=128)
     parser.add_argument("--ppl-window-index-file", type=Path, default=Path("results/phase1_v2/ppl_windows_wikitext2_seed0.json"))
     parser.add_argument("--skip-ppl", action="store_true")
+    parser.add_argument("--save-raw-text", action="store_true")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--no-local-files-only", dest="local_files_only", action="store_false")
     parser.set_defaults(local_files_only=True)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--no-deterministic", dest="deterministic", action="store_false")
+    parser.set_defaults(deterministic=False)
     parser.add_argument("--cells", nargs="*", default=[])
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)

@@ -18,7 +18,11 @@ HARMFUL_CONFIG="${HARMFUL_CONFIG:-}"
 HARMFUL_SPLIT="${HARMFUL_SPLIT:-train}"
 HARMFUL_COLUMN="${HARMFUL_COLUMN:-auto}"
 HARMFUL_OFFSET="${HARMFUL_OFFSET:-0}"
+HARMFUL_LIMIT_WAS_SET="${HARMFUL_LIMIT+x}"
 HARMFUL_LIMIT="${HARMFUL_LIMIT:-128}"
+if [[ -n "${EVAL_LIMIT:-}" && -z "$HARMFUL_LIMIT_WAS_SET" ]]; then
+  HARMFUL_LIMIT="$EVAL_LIMIT"
+fi
 CALIB_FILE="${CALIB_FILE:-}"
 CALIB_LIMIT="${CALIB_LIMIT:-128}"
 CALIB_MAX_LENGTH="${CALIB_MAX_LENGTH:-1024}"
@@ -35,7 +39,9 @@ PPL_STRIDE="${PPL_STRIDE:-512}"
 PPL_SAMPLE_WINDOWS="${PPL_SAMPLE_WINDOWS:-128}"
 PPL_WINDOW_INDEX_FILE="${PPL_WINDOW_INDEX_FILE:-results/phase1_v2/ppl_windows_wikitext2_seed0.json}"
 SKIP_PPL="${SKIP_PPL:-0}"
+SAVE_RAW_TEXT="${SAVE_RAW_TEXT:-0}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
+DETERMINISTIC="${DETERMINISTIC:-0}"
 MODE="${MODE:-eval}"
 SHARD_INDEX="${SHARD_INDEX:-0}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
@@ -90,10 +96,18 @@ fi
 if [[ "$SKIP_PPL" == "1" ]]; then
   COMMON_ARGS+=(--skip-ppl)
 fi
+if [[ "$SAVE_RAW_TEXT" == "1" ]]; then
+  COMMON_ARGS+=(--save-raw-text)
+fi
 if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
   COMMON_ARGS+=(--local-files-only)
 else
   COMMON_ARGS+=(--no-local-files-only)
+fi
+if [[ "$DETERMINISTIC" == "1" ]]; then
+  COMMON_ARGS+=(--deterministic)
+else
+  COMMON_ARGS+=(--no-deterministic)
 fi
 
 if [[ "$MODE" == "prepare" ]]; then
