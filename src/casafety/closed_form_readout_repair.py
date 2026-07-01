@@ -1276,6 +1276,8 @@ def run_single(args: argparse.Namespace) -> None:
                     )
                     * arm.eta,
                 }
+            elif arm.kind == "restore_s":
+                pass
             elif arm.kind != "pruned":
                 raise ValueError(f"Unsupported repair mode {arm.kind!r}")
 
