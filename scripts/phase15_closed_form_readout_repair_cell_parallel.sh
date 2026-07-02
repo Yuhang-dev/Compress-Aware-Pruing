@@ -8,6 +8,9 @@ LOG_DIR="${LOG_DIR:-logs}"
 
 CONFIG="${CONFIG:-configs/base.yaml}"
 MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts/vpref_projection}"
+MARGIN_DIR="${MARGIN_DIR:-results/phase15_margin_calib}"
+LAYERS="${LAYERS:-24,28,32}"
 RESTORE_ETA_VALUES="${RESTORE_ETA_VALUES:-0.25,0.5,1.0}"
 ETA_VALUES="${ETA_VALUES:-1.0}"
 TARGET_MARGIN_SWEEP="${TARGET_MARGIN_SWEEP:-2,6,12,20}"
@@ -30,6 +33,11 @@ run_shard() {
   local log_file="$LOG_DIR/readout_repair_${CONDITION}_${tag}.log"
   mkdir -p "$shard_dir"
   echo "[readout-repair-cell] launching condition=$CONDITION tag=$tag out=$shard_dir log=$log_file"
+  CONFIG="$CONFIG" \
+  MODEL="$MODEL" \
+  ARTIFACT_DIR="$ARTIFACT_DIR" \
+  MARGIN_DIR="$MARGIN_DIR" \
+  LAYERS="$LAYERS" \
   CONDITIONS="$CONDITION" \
   REPAIR_MODES="$repair_modes" \
   ETA_VALUES="$eta_values" \
@@ -51,6 +59,8 @@ python -m casafety.closed_form_readout_repair \
   --mode merge \
   --config "$CONFIG" \
   --model "$MODEL" \
+  --artifact-dir "$ARTIFACT_DIR" \
+  --margin-dir "$MARGIN_DIR" \
   --shard-root "$SHARD_ROOT" \
   --output-dir "$OUTPUT_DIR" \
   --ppl-max-delta "$PPL_MAX_DELTA" \

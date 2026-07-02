@@ -54,14 +54,19 @@ def parse_conditions(text: str) -> list[Condition]:
         if name == "dense":
             conditions.append(Condition(name="dense", pruner=None, sparsity=0.0))
             continue
-        if name.startswith("wanda_"):
-            value = name.rsplit("_", 1)[-1]
-            sparsity = float(value)
-            if sparsity > 1.0:
-                sparsity /= 100.0
-            conditions.append(Condition(name=f"wanda_{int(round(sparsity * 100))}", pruner="wanda", sparsity=sparsity))
-            continue
-        raise ValueError(f"Unsupported condition {name!r}; use dense or wanda_45 style names.")
+        if "_" in name:
+            pruner_raw, value = name.rsplit("_", 1)
+            aliases = {"mag": "magnitude"}
+            pruner = aliases.get(pruner_raw, pruner_raw)
+            if pruner in {"wanda", "magnitude"}:
+                sparsity = float(value)
+                if sparsity > 1.0:
+                    sparsity /= 100.0
+                conditions.append(
+                    Condition(name=f"{pruner}_{int(round(sparsity * 100))}", pruner=pruner, sparsity=sparsity)
+                )
+                continue
+        raise ValueError(f"Unsupported condition {name!r}; use dense, wanda_45, or magnitude_50 style names.")
     if not conditions:
         raise ValueError("No conditions selected.")
     return conditions
