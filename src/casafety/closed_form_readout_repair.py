@@ -113,10 +113,14 @@ def parse_repair_arms(modes: str, eta_values: str) -> list[RepairArm]:
         mode = mode.strip()
         if not mode:
             continue
-        if mode in {"pruned", "restore_s"}:
+        if mode == "pruned":
             arms.append(RepairArm(name="pruned", kind="pruned", eta=0.0))
-            if mode == "restore_s":
-                arms[-1] = RepairArm(name="restore_s", kind="restore_s", eta=0.0)
+            continue
+        if mode == "restore_s":
+            for eta in etas:
+                tag = f"{eta:g}".replace(".", "p")
+                name = "restore_s" if math.isclose(eta, 1.0) else f"restore_s_beta{tag}"
+                arms.append(RepairArm(name=name, kind="restore_s", eta=eta))
             continue
         for eta in etas:
             tag = f"{eta:g}".replace(".", "p")
@@ -380,6 +384,7 @@ def install_restore_s_hooks(
     layers: list[int],
     directions: dict[int, torch.Tensor],
     target_by_layer: dict[int, float],
+    beta: float = 1.0,
     records: dict[int, list[float]] | None = None,
     downstream_records: dict[int, list[float]] | None = None,
 ) -> list[Any]:
@@ -398,7 +403,7 @@ def install_restore_s_hooks(
                 last = hidden[:, -1, :]
                 current = (last.float() * direction_measure).sum(dim=-1, keepdim=True)
                 denom = (direction_patch.float() * direction_measure).sum().clamp_min(1e-12)
-                delta = ((hidden.new_tensor(target_value).float() - current) / denom).to(hidden.dtype)
+                delta = (float(beta) * (hidden.new_tensor(target_value).float() - current) / denom).to(hidden.dtype)
                 patched = hidden.clone()
                 patched_last = last + delta * direction_patch.view(1, -1)
                 patched[:, -1, :] = patched_last
@@ -624,6 +629,7 @@ def generate_harm_rows(
                 layers=layers,
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
+                beta=repair.eta,
                 records=restore_records,
                 downstream_records=restore_downstream_records,
             )
@@ -738,6 +744,7 @@ def generate_benign_rows(
                 layers=layers,
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
+                beta=repair.eta,
             )
         try:
             generated = generate_answer(model, tokenizer, prompt, max_new_tokens=max_new_tokens)
