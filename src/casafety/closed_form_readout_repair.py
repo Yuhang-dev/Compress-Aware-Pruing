@@ -95,12 +95,17 @@ def parse_conditions(text: str) -> list[Condition]:
         name = raw.strip()
         if not name:
             continue
-        if not name.startswith("wanda_"):
-            raise ValueError(f"Unsupported condition {name!r}; use wanda_45 style names.")
-        value = float(name.rsplit("_", 1)[-1])
+        if "_" not in name:
+            raise ValueError(f"Unsupported condition {name!r}; use wanda_45 or magnitude_50 style names.")
+        pruner_raw, sparsity_raw = name.rsplit("_", 1)
+        aliases = {"mag": "magnitude"}
+        pruner = aliases.get(pruner_raw, pruner_raw)
+        if pruner not in {"wanda", "magnitude"}:
+            raise ValueError(f"Unsupported condition {name!r}; use wanda_45 or magnitude_50 style names.")
+        value = float(sparsity_raw)
         if value > 1.0:
             value /= 100.0
-        conditions.append(Condition(name=f"wanda_{int(round(value * 100))}", pruner="wanda", sparsity=value))
+        conditions.append(Condition(name=f"{pruner}_{int(round(value * 100))}", pruner=pruner, sparsity=value))
     if not conditions:
         raise ValueError("No conditions selected.")
     return conditions
