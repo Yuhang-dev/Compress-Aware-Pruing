@@ -530,6 +530,8 @@ def main() -> None:
     parser.add_argument("--calib-max-length", type=int, default=256)
     parser.add_argument("--sparsities", nargs="+", default=["0.50"])
     parser.add_argument("--pruners", nargs="+", default=["magnitude", "wanda"])
+    parser.add_argument("--dense-only", action="store_true", help="Evaluate only the dense baseline.")
+    parser.add_argument("--no-dense", action="store_true", help="Do not prepend the dense baseline condition.")
     parser.add_argument("--judge", choices=["keyword", "llamaguard"], default="keyword")
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-max-new-tokens", type=int, default=32)
@@ -541,13 +543,20 @@ def main() -> None:
     model_id = resolve_model_id(config, args.model)
     prompts = load_prompts(args)
 
+    if args.dense_only and args.no_dense:
+        raise ValueError("--dense-only and --no-dense are mutually exclusive")
     pruners = [pruner for pruner in args.pruners if not (args.skip_wanda and pruner == "wanda")]
-    conditions = [EvalCondition("dense", None, None)]
-    for pruner in pruners:
-        for sparsity_text in args.sparsities:
-            sparsity = parse_sparsity(sparsity_text)
-            name = f"{pruner}_{format_sparsity_name(sparsity)}"
-            conditions.append(EvalCondition(name, pruner, sparsity))
+    conditions = []
+    if not args.no_dense:
+        conditions.append(EvalCondition("dense", None, None))
+    if not args.dense_only:
+        for pruner in pruners:
+            for sparsity_text in args.sparsities:
+                sparsity = parse_sparsity(sparsity_text)
+                name = f"{pruner}_{format_sparsity_name(sparsity)}"
+                conditions.append(EvalCondition(name, pruner, sparsity))
+    if not conditions:
+        raise ValueError("No evaluation conditions selected.")
 
     all_rows: list[dict[str, object]] = []
     for condition in conditions:

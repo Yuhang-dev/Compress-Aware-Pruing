@@ -224,12 +224,25 @@ def evaluate_condition(
     )
 
 
-def build_conditions(pruners: list[str], sparsities: list[str]) -> list[EvalCondition]:
-    conditions = [EvalCondition("dense", None, None)]
-    for pruner in pruners:
-        for sparsity_text in sparsities:
-            sparsity = parse_sparsity(sparsity_text)
-            conditions.append(EvalCondition(f"{pruner}_{format_sparsity_name(sparsity)}", pruner, sparsity))
+def build_conditions(
+    pruners: list[str],
+    sparsities: list[str],
+    *,
+    dense_only: bool = False,
+    no_dense: bool = False,
+) -> list[EvalCondition]:
+    if dense_only and no_dense:
+        raise ValueError("dense_only and no_dense are mutually exclusive")
+    conditions = []
+    if not no_dense:
+        conditions.append(EvalCondition("dense", None, None))
+    if not dense_only:
+        for pruner in pruners:
+            for sparsity_text in sparsities:
+                sparsity = parse_sparsity(sparsity_text)
+                conditions.append(EvalCondition(f"{pruner}_{format_sparsity_name(sparsity)}", pruner, sparsity))
+    if not conditions:
+        raise ValueError("No PPL evaluation conditions selected.")
     return conditions
 
 
@@ -280,6 +293,8 @@ def main() -> None:
     parser.add_argument("--calib-max-length", type=int, default=256)
     parser.add_argument("--sparsities", nargs="+", default=["0.45", "0.50"])
     parser.add_argument("--pruners", nargs="+", default=["wanda"])
+    parser.add_argument("--dense-only", action="store_true", help="Evaluate only the dense baseline.")
+    parser.add_argument("--no-dense", action="store_true", help="Do not prepend the dense baseline condition.")
     parser.add_argument("--local-files-only", action="store_true")
     args = parser.parse_args()
 
@@ -308,7 +323,12 @@ def main() -> None:
     )
 
     rows = []
-    for condition in build_conditions(args.pruners, args.sparsities):
+    for condition in build_conditions(
+        args.pruners,
+        args.sparsities,
+        dense_only=args.dense_only,
+        no_dense=args.no_dense,
+    ):
         print(f"[ppl-v2] running {condition.name}")
         rows.append(
             evaluate_condition(
