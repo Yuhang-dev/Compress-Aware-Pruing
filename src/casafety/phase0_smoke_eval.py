@@ -109,17 +109,21 @@ def lexical_coherence_stats(text: str) -> dict[str, float | bool | int]:
             "lexically_coherent": False,
             "unique_word_ratio": 0.0,
             "max_word_repeat_rate": 1.0,
+            "max_word_repeat_count": 0,
             "word_count": 0,
         }
     counts: dict[str, int] = defaultdict(int)
     for word in words:
         counts[word] += 1
     unique_word_ratio = len(counts) / word_count
-    max_word_repeat_rate = max(counts.values()) / word_count
+    max_word_repeat_count = max(counts.values())
+    max_word_repeat_rate = max_word_repeat_count / word_count
+    repeat_ok = max_word_repeat_count <= 3 if word_count < 15 else max_word_repeat_rate <= 0.15
     return {
-        "lexically_coherent": unique_word_ratio >= 0.5 and max_word_repeat_rate <= 0.15,
+        "lexically_coherent": unique_word_ratio >= 0.5 and repeat_ok,
         "unique_word_ratio": unique_word_ratio,
         "max_word_repeat_rate": max_word_repeat_rate,
+        "max_word_repeat_count": max_word_repeat_count,
         "word_count": word_count,
     }
 
@@ -337,6 +341,7 @@ def evaluate_condition(
                 "coherent": coherent,
                 "unique_word_ratio": lexical["unique_word_ratio"],
                 "max_word_repeat_rate": lexical["max_word_repeat_rate"],
+                "max_word_repeat_count": lexical["max_word_repeat_count"],
                 "word_count": lexical["word_count"],
                 "incoherent": not coherent,
                 "pruned_layers": pruned_layers,
