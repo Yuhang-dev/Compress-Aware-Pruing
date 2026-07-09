@@ -19,6 +19,7 @@ from transformers import GenerationConfig
 from .config import load_config
 from .models import resolve_judge_model_id, resolve_model_id
 from .pruners import compute_mask
+from .sparsegpt import apply_sparsegpt_pruning
 
 
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -231,6 +232,18 @@ def apply_pruning(
     sparsity: float | str,
     calib_max_length: int,
 ) -> int:
+    if pruner == "sparsegpt":
+        return apply_sparsegpt_pruning(
+            model=model,
+            tokenizer=tokenizer,
+            modules=target_linear_modules(model),
+            prompts=CALIB_PROMPTS,
+            sparsity=sparsity,
+            max_length=calib_max_length,
+            format_prompt=format_prompt,
+            default_suffixes=TARGET_LINEAR_SUFFIXES,
+        )
+
     wanda_norms = None
     if pruner == "wanda":
         wanda_norms = collect_wanda_input_norms(model, tokenizer, CALIB_PROMPTS, calib_max_length)
