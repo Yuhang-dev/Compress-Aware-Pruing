@@ -105,6 +105,21 @@ fi
 if [[ -n "${HARMFUL_COLUMN:-}" ]]; then
   ARGS+=(--harmful-column "$HARMFUL_COLUMN")
 fi
+if [[ -n "${HARMFUL_EVAL_FILE:-}" ]]; then
+  ARGS+=(--harmful-eval-file "$HARMFUL_EVAL_FILE")
+fi
+if [[ -n "${HARMFUL_EVAL_DATASET:-}" ]]; then
+  ARGS+=(--harmful-eval-dataset "$HARMFUL_EVAL_DATASET")
+fi
+if [[ -n "${HARMFUL_EVAL_CONFIG:-}" ]]; then
+  ARGS+=(--harmful-eval-config "$HARMFUL_EVAL_CONFIG")
+fi
+if [[ -n "${HARMFUL_EVAL_SPLIT:-}" ]]; then
+  ARGS+=(--harmful-eval-split "$HARMFUL_EVAL_SPLIT")
+fi
+if [[ -n "${HARMFUL_EVAL_COLUMN:-}" ]]; then
+  ARGS+=(--harmful-eval-column "$HARMFUL_EVAL_COLUMN")
+fi
 if [[ -n "${BENIGN_FILE:-}" ]]; then
   ARGS+=(--benign-file "$BENIGN_FILE")
 fi

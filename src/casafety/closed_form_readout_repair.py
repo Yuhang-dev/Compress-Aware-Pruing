@@ -1363,11 +1363,11 @@ def run_single(args: argparse.Namespace) -> None:
         limit=args.fit_limit,
     )
     harm_eval = load_prompt_slice(
-        file=args.harmful_file,
-        dataset=args.harmful_dataset,
-        config=args.harmful_config,
-        split=args.harmful_split,
-        column=args.harmful_column,
+        file=args.harmful_eval_file or args.harmful_file,
+        dataset=args.harmful_eval_dataset or args.harmful_dataset,
+        config=args.harmful_eval_config if args.harmful_eval_config is not None else args.harmful_config,
+        split=args.harmful_eval_split or args.harmful_split,
+        column=args.harmful_eval_column or args.harmful_column,
         local_files_only=args.local_files_only,
         offset=args.harmful_eval_offset,
         limit=args.eval_limit,
@@ -1772,6 +1772,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--harmful-config")
     parser.add_argument("--harmful-split", default="train")
     parser.add_argument("--harmful-column", default="auto")
+    parser.add_argument("--harmful-eval-file", type=Path)
+    parser.add_argument("--harmful-eval-dataset")
+    parser.add_argument("--harmful-eval-config")
+    parser.add_argument("--harmful-eval-split")
+    parser.add_argument("--harmful-eval-column")
     parser.add_argument("--harmful-fit-offset", type=int, default=0)
     parser.add_argument("--harmful-eval-offset", type=int, default=128)
     parser.add_argument("--fit-limit", type=int, default=128)
