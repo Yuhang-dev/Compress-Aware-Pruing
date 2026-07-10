@@ -167,19 +167,21 @@ def strict_dir(args: argparse.Namespace, dataset: str) -> Path:
 def select_direct_arm(args: argparse.Namespace, dataset: str, kind: str) -> pd.DataFrame:
     frame = read_text_free_csv(direct_dir(args, dataset) / "repair_details.csv")
     selected = frame[frame["condition"].eq("wanda_50") & frame["repair_kind"].eq(kind)].copy()
+    selected = selected.sort_values("eval_order").head(args.strict_eval_limit).reset_index(drop=True)
     if len(selected) != args.strict_eval_limit:
         raise ValueError(f"Expected {args.strict_eval_limit} {kind} rows in {dataset}; got {len(selected)}.")
     if selected["prompt_id"].duplicated().any():
         raise ValueError(f"Duplicate {kind} prompt IDs in {dataset} direct run.")
-    return selected.sort_values("eval_order").reset_index(drop=True)
+    return selected
 
 
 def select_strict_dense(args: argparse.Namespace, dataset: str) -> pd.DataFrame:
     frame = read_text_free_csv(strict_dir(args, dataset) / "dense_run" / "repair_details.csv")
     selected = frame[frame["condition"].eq("dense") & frame["repair_kind"].eq("pruned")].copy()
+    selected = selected.sort_values("eval_order").head(args.strict_eval_limit).reset_index(drop=True)
     if len(selected) != args.strict_eval_limit:
         raise ValueError(f"Expected {args.strict_eval_limit} dense rows in {dataset}; got {len(selected)}.")
-    return selected.sort_values("eval_order").reset_index(drop=True)
+    return selected
 
 
 def rebuild_advbench_solves(
