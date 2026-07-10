@@ -34,14 +34,18 @@ launch () {
   local tag="$1"; shift
   echo "[ood-residual-parallel] launching $tag" >&2
   env "${shared[@]}" "$@" > "$LOG_DIR/$tag.log" 2>&1 &
-  echo $!
+  LAST_PID=$!
 }
 
 pids=()
-pids+=("$(launch threshold MODE=threshold bash scripts/phase2_ood_residual_diag.sh)")
-pids+=("$(launch representation MODE=representation bash scripts/phase2_ood_residual_diag.sh)")
-pids+=("$(launch oracle_harmbench MODE=oracle EVAL_DATASET=harmbench bash scripts/phase2_ood_residual_diag.sh)")
-pids+=("$(launch oracle_strongreject MODE=oracle EVAL_DATASET=strongreject bash scripts/phase2_ood_residual_diag.sh)")
+launch threshold MODE=threshold bash scripts/phase2_ood_residual_diag.sh
+pids+=("$LAST_PID")
+launch representation MODE=representation bash scripts/phase2_ood_residual_diag.sh
+pids+=("$LAST_PID")
+launch oracle_harmbench MODE=oracle EVAL_DATASET=harmbench bash scripts/phase2_ood_residual_diag.sh
+pids+=("$LAST_PID")
+launch oracle_strongreject MODE=oracle EVAL_DATASET=strongreject bash scripts/phase2_ood_residual_diag.sh
+pids+=("$LAST_PID")
 echo "[ood-residual-parallel] pids: ${pids[*]}"
 
 status=0
