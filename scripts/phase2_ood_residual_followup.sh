@@ -21,6 +21,7 @@ ARGS=(
   --response-ppl-threshold "${RESPONSE_PPL_THRESHOLD:-100}"
   --judge-max-new-tokens "${JUDGE_MAX_NEW_TOKENS:-16}"
   --oracle-epsilons "${ORACLE_EPSILONS:-0.5,2.0}"
+  --oracle-arm-group "${ORACLE_ARM_GROUP:-all}"
   --oracle-min-coherence "${ORACLE_MIN_COHERENCE:-0.95}"
   --max-negative-margin "${MAX_NEGATIVE_MARGIN:-0.02}"
   --fit-limit "${FIT_LIMIT:-128}"

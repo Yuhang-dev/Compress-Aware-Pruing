@@ -196,40 +196,44 @@ def adaptive_oracle(args: argparse.Namespace) -> None:
     layers, directions, taus, tau_mean = directions_and_taus(args, model_id)
     prompts = load_slice(args, args.eval_dataset, offset=args.eval_offset, limit=args.eval_limit)
     benign = load_benign_slice(args, offset=args.benign_eval_offset, limit=args.benign_eval_limit)
-    pruned_scores = collect_pruned_scores(
-        args, model_id=model_id, prompts=prompts, layers=layers, directions=directions
-    )
-    dense_benign_targets = collect_dense_targets(
-        model_id,
-        benign,
-        layers=layers,
-        directions=directions,
-        max_length=args.max_length,
-        local_files_only=args.local_files_only,
-    )
-
-    arms: list[tuple[RepairArm, Condition, float | None, dict[int, dict[int, float]] | None, dict[int, dict[int, float]] | None]] = [
-        (RepairArm("dense", "pruned", 0.0), Condition("dense", "none", 0.0), None, None, None),
-        (RepairArm("pruned", "pruned", 0.0), Condition("wanda_50", "wanda", 0.50), None, None, None),
-    ]
-    for epsilon in args.oracle_epsilons:
-        targets = {
-            prompt_id: {
-                layer: max(float(pruned_scores[prompt_id][layer]), float(taus[layer] + epsilon))
-                for layer in layers
-            }
-            for prompt_id, _prompt in prompts
-        }
-        name = f"adaptive_tau_eps{tagged_float(epsilon)}"
-        arms.append(
-            (
-                RepairArm(name, "restore_s", 1.0),
-                Condition("wanda_50", "wanda", 0.50),
-                epsilon,
-                targets,
-                dense_benign_targets,
-            )
+    arms: list[tuple[RepairArm, Condition, float | None, dict[int, dict[int, float]] | None, dict[int, dict[int, float]] | None]] = []
+    if args.oracle_arm_group in {"all", "baseline"}:
+        arms.extend(
+            [
+                (RepairArm("dense", "pruned", 0.0), Condition("dense", "none", 0.0), None, None, None),
+                (RepairArm("pruned", "pruned", 0.0), Condition("wanda_50", "wanda", 0.50), None, None, None),
+            ]
         )
+    if args.oracle_arm_group in {"all", "oracle"}:
+        pruned_scores = collect_pruned_scores(
+            args, model_id=model_id, prompts=prompts, layers=layers, directions=directions
+        )
+        dense_benign_targets = collect_dense_targets(
+            model_id,
+            benign,
+            layers=layers,
+            directions=directions,
+            max_length=args.max_length,
+            local_files_only=args.local_files_only,
+        )
+        for epsilon in args.oracle_epsilons:
+            targets = {
+                prompt_id: {
+                    layer: max(float(pruned_scores[prompt_id][layer]), float(taus[layer] + epsilon))
+                    for layer in layers
+                }
+                for prompt_id, _prompt in prompts
+            }
+            name = f"adaptive_tau_eps{tagged_float(epsilon)}"
+            arms.append(
+                (
+                    RepairArm(name, "restore_s", 1.0),
+                    Condition("wanda_50", "wanda", 0.50),
+                    epsilon,
+                    targets,
+                    dense_benign_targets,
+                )
+            )
 
     all_harm: list[dict[str, Any]] = []
     benign_by_arm: dict[str, list[dict[str, Any]]] = {}
@@ -264,8 +268,18 @@ def adaptive_oracle(args: argparse.Namespace) -> None:
         summary_rows.append(item)
     summary = pd.DataFrame(summary_rows)
     output = args.output_dir / "adaptive_oracle" / args.eval_dataset
-    write_text_free_csv(summary, output / "adaptive_oracle_summary.csv")
+    if args.oracle_arm_group == "all":
+        write_adaptive_oracle_outputs(args, summary, output)
+    else:
+        write_text_free_csv(
+            summary, output / f"adaptive_oracle_summary_{args.oracle_arm_group}.csv"
+        )
 
+
+def write_adaptive_oracle_outputs(
+    args: argparse.Namespace, summary: pd.DataFrame, output: Path
+) -> None:
+    write_text_free_csv(summary, output / "adaptive_oracle_summary.csv")
     dense = summary[summary["arm"].eq("dense")].iloc[0]
     pruned = summary[summary["arm"].eq("pruned")].iloc[0]
     candidates = summary[
@@ -292,6 +306,23 @@ def adaptive_oracle(args: argparse.Namespace) -> None:
         },
         output / "adaptive_oracle_decision.json",
     )
+
+
+def adaptive_oracle_merge(args: argparse.Namespace) -> None:
+    if args.eval_dataset not in OOD_DATASETS:
+        raise ValueError("adaptive-oracle-merge requires --eval-dataset")
+    output = args.output_dir / "adaptive_oracle" / args.eval_dataset
+    paths = [
+        output / "adaptive_oracle_summary_baseline.csv",
+        output / "adaptive_oracle_summary_oracle.csv",
+    ]
+    missing = [path for path in paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Missing adaptive-oracle shards: {missing}")
+    summary = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+    if summary["arm"].duplicated().any():
+        raise ValueError("Duplicate adaptive-oracle arms across shards.")
+    write_adaptive_oracle_outputs(args, summary, output)
 
 
 def apply_vector_updates(
@@ -628,7 +659,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["adaptive-oracle", "rank2-prepare", "rank2-cell", "rank2-merge"],
+        choices=["adaptive-oracle", "adaptive-oracle-merge", "rank2-prepare", "rank2-cell", "rank2-merge"],
     )
     parser.add_argument("--config", type=Path, default=Path("configs/base.yaml"))
     parser.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
@@ -655,6 +686,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-max-new-tokens", type=int, default=16)
     parser.add_argument("--oracle-epsilons", default="0.5,2.0")
+    parser.add_argument("--oracle-arm-group", choices=["all", "baseline", "oracle"], default="all")
     parser.add_argument("--oracle-min-coherence", type=float, default=0.95)
     parser.add_argument("--max-negative-margin", type=float, default=0.02)
     parser.add_argument("--oracle-residual-margin", type=float, default=0.03)
@@ -711,6 +743,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     if args.mode == "adaptive-oracle":
         adaptive_oracle(args)
+    elif args.mode == "adaptive-oracle-merge":
+        adaptive_oracle_merge(args)
     elif args.mode == "rank2-prepare":
         rank2_prepare(args)
     elif args.mode == "rank2-cell":
