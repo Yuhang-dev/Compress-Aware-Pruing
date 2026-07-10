@@ -5,10 +5,18 @@ OUTPUT_DIR="${OUTPUT_DIR:-results/phase2_lodo_remar}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts/phase2_lodo_remar}"
 MAX_PARALLEL="${MAX_PARALLEL:-4}"
 LOG_DIR="${LOG_DIR:-logs/phase2_lodo_remar}"
+SKIP_PREPARE="${SKIP_PREPARE:-0}"
 mkdir -p "$LOG_DIR"
 
-MODE=prepare OUTPUT_DIR="$OUTPUT_DIR" ARTIFACT_DIR="$ARTIFACT_DIR" bash scripts/phase2_lodo_remar.sh \
-  > "$LOG_DIR/prepare.log" 2>&1
+if [[ "$SKIP_PREPARE" != "1" ]]; then
+  MODE=prepare OUTPUT_DIR="$OUTPUT_DIR" ARTIFACT_DIR="$ARTIFACT_DIR" bash scripts/phase2_lodo_remar.sh \
+    > "$LOG_DIR/prepare.log" 2>&1
+elif [[ ! -f "$OUTPUT_DIR/lodo_manifest.json" ]]; then
+  echo "[lodo-remar] SKIP_PREPARE=1 requires $OUTPUT_DIR/lodo_manifest.json" >&2
+  exit 2
+else
+  echo "[lodo-remar] reusing prepared artifacts from $OUTPUT_DIR"
+fi
 
 CELL_COUNT=$(OUTPUT_DIR="$OUTPUT_DIR" python - <<'PY'
 import json

@@ -412,7 +412,7 @@ def run_cell(args: argparse.Namespace) -> None:
     print(f"[lodo-remar] cell={cell['cell_id']} held={cell['heldout_dataset']} r={cell['r_source']} g={cell['g_source']}")
     model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
     try:
-        apply_condition_pruning(model, tokenizer, "wanda", 0.50, args.calib_max_length)
+        apply_condition_pruning(model, tokenizer, condition, args.calib_max_length)
         solves = solve_for_cell(model, tokenizer, layers=layers, directions=directions, taus=taus, harm_fit=harm_fit, benign_fit=benign_fit, args=args)
     finally:
         release(model)
@@ -425,7 +425,7 @@ def run_cell(args: argparse.Namespace) -> None:
     for arm in arms:
         model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
         try:
-            pruned_layers = apply_condition_pruning(model, tokenizer, "wanda", 0.50, args.calib_max_length)
+            pruned_layers = apply_condition_pruning(model, tokenizer, condition, args.calib_max_length)
             stats: dict[str, float] = {"delta_w_norm_total": 0.0}
             if arm.kind == "readout_repair":
                 stats = apply_rank1_updates(model, solves=solves, eta=1.0, random_direction=False, seed=args.seed)
