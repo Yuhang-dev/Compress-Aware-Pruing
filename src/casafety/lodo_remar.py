@@ -525,7 +525,20 @@ def merge(args: argparse.Namespace) -> None:
         write_text_free_csv(pd.concat([pd.read_csv(path) for path in details_paths], ignore_index=True), args.output_dir / "lodo_remar_details.csv")
     if benign_paths:
         write_text_free_csv(pd.concat([pd.read_csv(path) for path in benign_paths], ignore_index=True), args.output_dir / "lodo_remar_benign_details.csv")
-    repairs = summary[summary["repair_kind"].eq("readout_repair")].copy()
+    # Cell summaries already carry their own pruned reference columns.  Drop
+    # them before attaching a held-out-dataset baseline to avoid Pandas suffixes
+    # such as ``pruned_asr_x``/``pruned_asr_y`` in the factor matrix.
+    repairs = summary[summary["repair_kind"].eq("readout_repair")].drop(
+        columns=[
+            "pruned_asr",
+            "pruned_benign_refusal",
+            "pruned_coherent_rate",
+            "asr_drop_vs_pruned",
+            "benign_refusal_delta_vs_pruned",
+            "coherent_delta_vs_pruned",
+        ],
+        errors="ignore",
+    ).copy()
     baseline = summary[summary["repair_kind"].eq("pruned")][["heldout_dataset", "asr", "coherent_rate", "benign_refusal_rate"]].copy()
     baseline = baseline.groupby("heldout_dataset", as_index=False).mean(numeric_only=True).rename(columns={"asr": "pruned_asr", "coherent_rate": "pruned_coherent_rate", "benign_refusal_rate": "pruned_benign_refusal"})
     matrix = repairs.merge(baseline, on="heldout_dataset", how="left")
