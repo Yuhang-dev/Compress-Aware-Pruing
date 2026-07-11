@@ -26,6 +26,7 @@ ORACLE_MIN_COHERENCE="${ORACLE_MIN_COHERENCE:-0.95}"
 MAX_NEGATIVE_MARGIN="${MAX_NEGATIVE_MARGIN:-0.05}"
 DENSE_ASR_TOLERANCE="${DENSE_ASR_TOLERANCE:-0.03}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
+ONE_SIDED_ADAPTIVE="${ONE_SIDED_ADAPTIVE:-0}"
 BENIGN_FILE="${BENIGN_FILE:-data/alpaca_cleaned_train.jsonl}"
 
 mkdir -p "$OUTPUT_DIR" "$SHARD_DIR"
@@ -60,5 +61,6 @@ args=(
 if [[ -n "${JUDGE_MODEL:-}" ]]; then args+=(--judge-model "$JUDGE_MODEL"); fi
 if [[ -n "$BENIGN_FILE" ]]; then args+=(--benign-file "$BENIGN_FILE"); fi
 if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then args+=(--local-files-only); fi
+if [[ "$ONE_SIDED_ADAPTIVE" == "1" ]]; then args+=(--one-sided-adaptive); fi
 
 python -m casafety.adaptive_oracle_sparsity "${args[@]}"

@@ -399,6 +399,7 @@ def install_restore_s_hooks(
     directions: dict[int, torch.Tensor],
     target_by_layer: dict[int, float],
     beta: float = 1.0,
+    one_sided: bool = False,
     records: dict[int, list[float]] | None = None,
     downstream_records: dict[int, list[float]] | None = None,
 ) -> list[Any]:
@@ -417,7 +418,10 @@ def install_restore_s_hooks(
                 last = hidden[:, -1, :]
                 current = (last.float() * direction_measure).sum(dim=-1, keepdim=True)
                 denom = (direction_patch.float() * direction_measure).sum().clamp_min(1e-12)
-                delta = (float(beta) * (hidden.new_tensor(target_value).float() - current) / denom).to(hidden.dtype)
+                target_gap = hidden.new_tensor(target_value).float() - current
+                if one_sided:
+                    target_gap = target_gap.clamp_min(0.0)
+                delta = (float(beta) * target_gap / denom).to(hidden.dtype)
                 patched = hidden.clone()
                 patched_last = last + delta * direction_patch.view(1, -1)
                 patched[:, -1, :] = patched_last
@@ -622,6 +626,7 @@ def generate_harm_rows(
     response_ppl_threshold: float,
     pruned_layers: int,
     update_stats: dict[str, float],
+    restore_one_sided: bool = False,
 ) -> list[dict[str, Any]]:
     rows = []
     total = len(prompts)
@@ -644,6 +649,7 @@ def generate_harm_rows(
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
                 beta=repair.eta,
+                one_sided=restore_one_sided,
                 records=restore_records,
                 downstream_records=restore_downstream_records,
             )
@@ -746,6 +752,7 @@ def generate_benign_rows(
     response_ppl_threshold: float,
     pruned_layers: int,
     update_stats: dict[str, float],
+    restore_one_sided: bool = False,
 ) -> list[dict[str, Any]]:
     rows = []
     total = len(prompts)
@@ -763,6 +770,7 @@ def generate_benign_rows(
                 directions=directions,
                 target_by_layer=restore_targets[prompt_id],
                 beta=repair.eta,
+                one_sided=restore_one_sided,
             )
         try:
             generated = generate_answer(model, tokenizer, prompt, max_new_tokens=max_new_tokens)

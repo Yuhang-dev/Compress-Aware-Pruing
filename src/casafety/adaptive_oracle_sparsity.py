@@ -197,6 +197,7 @@ def generate_one_arm(
     benign_targets: dict[int, dict[int, float]] | None,
     args: argparse.Namespace,
     pruned_layers: int,
+    restore_one_sided: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     stats = {"delta_w_norm_total": 0.0}
     harm_rows = generate_harm_rows(
@@ -216,6 +217,7 @@ def generate_one_arm(
         response_ppl_threshold=args.response_ppl_threshold,
         pruned_layers=pruned_layers,
         update_stats=stats,
+        restore_one_sided=restore_one_sided,
     )
     benign_rows = generate_benign_rows(
         model,
@@ -232,6 +234,7 @@ def generate_one_arm(
         response_ppl_threshold=args.response_ppl_threshold,
         pruned_layers=pruned_layers,
         update_stats=stats,
+        restore_one_sided=restore_one_sided,
     )
     return harm_rows, benign_rows
 
@@ -260,6 +263,7 @@ def run_dense(args: argparse.Namespace) -> None:
             benign_targets=None,
             args=args,
             pruned_layers=0,
+            restore_one_sided=False,
         )
     finally:
         release(model)
@@ -318,22 +322,30 @@ def run_cell(args: argparse.Namespace) -> None:
     arm_meta: list[tuple[str, float | None, float | None]] = []
     try:
         pruned_layers = apply_condition_pruning(model, tokenizer, condition, args.calib_max_length)
-        pruned_scores = collect_targets(
-            model,
-            tokenizer,
-            prompts,
-            layers=layers,
-            directions=directions,
-            max_length=args.max_length,
-            label=condition.name,
-        )
-        adaptive_targets = {
-            prompt_id: {
-                layer: max(float(pruned_scores[prompt_id][layer]), float(taus[layer] + args.epsilon))
-                for layer in layers
+        if args.one_sided_adaptive:
+            adaptive_targets = {
+                prompt_id: {layer: float(taus[layer] + args.epsilon) for layer in layers}
+                for prompt_id, _prompt in prompts
             }
-            for prompt_id, _prompt in prompts
-        }
+            adaptive_name = f"adaptive_floor_eps{tagged_float(args.epsilon)}"
+        else:
+            pruned_scores = collect_targets(
+                model,
+                tokenizer,
+                prompts,
+                layers=layers,
+                directions=directions,
+                max_length=args.max_length,
+                label=condition.name,
+            )
+            adaptive_targets = {
+                prompt_id: {
+                    layer: max(float(pruned_scores[prompt_id][layer]), float(taus[layer] + args.epsilon))
+                    for layer in layers
+                }
+                for prompt_id, _prompt in prompts
+            }
+            adaptive_name = f"adaptive_tau_eps{tagged_float(args.epsilon)}"
         arms = [
             (RepairArm("pruned", "pruned", 0.0), None, None, None, None),
             (
@@ -344,7 +356,7 @@ def run_cell(args: argparse.Namespace) -> None:
                 None,
             ),
             (
-                RepairArm(f"adaptive_tau_eps{tagged_float(args.epsilon)}", "restore_s", 1.0),
+                RepairArm(adaptive_name, "restore_s", 1.0),
                 adaptive_targets,
                 dense_benign_targets,
                 None,
@@ -367,6 +379,9 @@ def run_cell(args: argparse.Namespace) -> None:
                 benign_targets=benign_targets,
                 args=args,
                 pruned_layers=pruned_layers,
+                restore_one_sided=(
+                    args.one_sided_adaptive and repair.name == adaptive_name
+                ),
             )
             all_harm.extend(harm_rows)
             benign_by_arm[repair.name] = benign_rows
@@ -420,7 +435,7 @@ def build_wide(summary: pd.DataFrame, sparsities: list[float]) -> pd.DataFrame:
         for prefix, pattern in [
             ("pruned", "pruned"),
             ("beta_limited", "beta_limited_"),
-            ("adaptive", "adaptive_tau_"),
+            ("adaptive", "adaptive_"),
         ]:
             selected = cell[cell["arm"].str.startswith(pattern)]
             if len(selected) != 1:
@@ -545,6 +560,7 @@ def run_merge(args: argparse.Namespace) -> None:
         "sparsities": args.sparsities,
         "fixed_beta": float(args.beta),
         "adaptive_epsilon": float(args.epsilon),
+        "adaptive_mode": "one_sided_floor" if args.one_sided_adaptive else "fixed_prompt_target",
         "oracle_min_coherence": float(args.oracle_min_coherence),
         "max_negative_margin": float(args.max_negative_margin),
         "dense_asr_tolerance": float(args.dense_asr_tolerance),
@@ -616,6 +632,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--oracle-min-coherence", type=float, default=0.95)
     parser.add_argument("--max-negative-margin", type=float, default=0.05)
     parser.add_argument("--dense-asr-tolerance", type=float, default=0.03)
+    parser.add_argument("--one-sided-adaptive", action="store_true")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--benign-file", type=Path)
     parser.add_argument("--benign-dataset", default="yahma/alpaca-cleaned")

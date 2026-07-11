@@ -33,6 +33,7 @@ common=(
   MAX_NEGATIVE_MARGIN="${MAX_NEGATIVE_MARGIN:-0.05}"
   DENSE_ASR_TOLERANCE="${DENSE_ASR_TOLERANCE:-0.03}"
   LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
+  ONE_SIDED_ADAPTIVE="${ONE_SIDED_ADAPTIVE:-0}"
 )
 
 echo "[adaptive-sweep] running shared dense baseline"
