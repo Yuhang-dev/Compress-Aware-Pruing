@@ -76,3 +76,7 @@ done
 
 env "${common[@]}" MODE=merge \
   bash scripts/phase2_remar_coverage_diag.sh
+
+if [[ "${SHUTDOWN:-0}" == "1" ]]; then
+  /usr/bin/shutdown
+fi

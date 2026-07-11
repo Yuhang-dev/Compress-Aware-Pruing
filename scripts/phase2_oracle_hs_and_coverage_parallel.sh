@@ -19,6 +19,7 @@ env \
   BETA="${BETA:-0.5}" \
   EPSILON="${EPSILON:-0.5}" \
   LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}" \
+  SHUTDOWN=0 \
   bash scripts/phase2_adaptive_oracle_advbench_sparsity_parallel.sh
 
 echo "[joint] Part 2: ReMaR conditional/temporal coverage"
@@ -35,6 +36,7 @@ env \
   TARGET_MARGIN="${TARGET_MARGIN:-20}" \
   LAMBDA_BENIGN="${LAMBDA_BENIGN:-20}" \
   LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}" \
+  SHUTDOWN=0 \
   bash scripts/phase2_remar_coverage_diag_parallel.sh
 
 if [[ "${SHUTDOWN:-0}" == "1" ]]; then
