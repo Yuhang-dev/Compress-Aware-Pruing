@@ -563,10 +563,29 @@ def run_merge(args: argparse.Namespace) -> None:
         "oracle_scope": "Runtime per-prompt persistent activation intervention; mechanism upper bound, not a deployable repair.",
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    curve_rows = []
+    for _, row in wide.iterrows():
+        for oracle, prefix in (("beta_limited", "beta_limited"), ("adaptive", "adaptive")):
+            curve_rows.append(
+                {
+                    "sparsity": float(row["sparsity"]),
+                    "oracle": oracle,
+                    "asr": float(row[f"{prefix}_asr"]),
+                    "negative_margin_fraction": float(
+                        row[f"{prefix}_negative_margin_fraction"]
+                    ),
+                    "coherent_rate": float(row[f"{prefix}_coherent_rate"]),
+                }
+            )
     write_text_free_csv(summary, args.output_dir / "adaptive_oracle_sparsity_summary.csv")
     write_text_free_csv(wide, args.output_dir / "adaptive_oracle_sparsity_wide.csv")
+    write_text_free_csv(
+        pd.DataFrame(curve_rows), args.output_dir / "oracle_comparison_curves.csv"
+    )
     write_decision(decision, args.output_dir / "decision.json")
+    write_decision(decision, args.output_dir / "part1_decision.json")
     write_analysis(decision, wide, args.output_dir / "analysis.md")
+    write_analysis(decision, wide, args.output_dir / "part1_analysis.md")
 
 
 def parser() -> argparse.ArgumentParser:
