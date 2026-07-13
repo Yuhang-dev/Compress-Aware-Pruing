@@ -59,6 +59,8 @@ class SolveConfig:
     solve_id: str
     target_margin: float
     lambda_benign: float
+    target_margin_mode: str = "fixed"
+    target_margin_by_layer: dict[int, float] | None = None
 
 
 @dataclass
@@ -142,22 +144,58 @@ def parse_repair_arms(modes: str, eta_values: str) -> list[RepairArm]:
     return arms
 
 
-def parse_solve_configs(target_margins: str, lambda_benigns: str) -> list[SolveConfig]:
+def parse_solve_configs(
+    target_margins: str,
+    lambda_benigns: str,
+    target_margin_mode: str = "fixed",
+) -> list[SolveConfig]:
+    if target_margin_mode not in {"fixed", "dense_median"}:
+        raise ValueError(f"Unsupported target margin mode: {target_margin_mode!r}")
     configs = []
-    for target_margin in parse_float_list(target_margins):
-        for lambda_benign in parse_float_list(lambda_benigns):
-            tm = f"{target_margin:g}".replace(".", "p")
+    lambda_values = parse_float_list(lambda_benigns)
+    if target_margin_mode == "dense_median":
+        for lambda_benign in lambda_values:
             lb = f"{lambda_benign:g}".replace(".", "p")
             configs.append(
                 SolveConfig(
-                    solve_id=f"tm{tm}_lb{lb}",
-                    target_margin=target_margin,
+                    solve_id=f"tmdense_lb{lb}",
+                    target_margin=float("nan"),
                     lambda_benign=lambda_benign,
+                    target_margin_mode=target_margin_mode,
                 )
             )
+    else:
+        for target_margin in parse_float_list(target_margins):
+            for lambda_benign in lambda_values:
+                tm = f"{target_margin:g}".replace(".", "p")
+                lb = f"{lambda_benign:g}".replace(".", "p")
+                configs.append(
+                    SolveConfig(
+                        solve_id=f"tm{tm}_lb{lb}",
+                        target_margin=target_margin,
+                        lambda_benign=lambda_benign,
+                        target_margin_mode=target_margin_mode,
+                    )
+                )
     if not configs:
         raise ValueError("No solve configs produced; check target/lambda sweep values.")
     return configs
+
+
+def dense_median_target_margins(
+    dense_harm_data: dict[int, dict[str, Any]],
+    *,
+    layers: list[int],
+) -> dict[int, float]:
+    score_rows = {layer: dense_harm_data[layer]["s"].float().cpu() for layer in layers}
+    sizes = {int(values.numel()) for values in score_rows.values()}
+    if len(sizes) != 1 or not sizes or next(iter(sizes)) == 0:
+        raise ValueError(f"Dense harmful readouts are not aligned across layers: sizes={sorted(sizes)}")
+    medians = {
+        layer: float(torch.quantile(values, 0.5).item())
+        for layer, values in score_rows.items()
+    }
+    return medians
 
 
 def json_default(value):
@@ -703,6 +741,7 @@ def generate_harm_rows(
             "eta": repair.eta,
             "solve_id": solve_config.solve_id if solve_config is not None else "baseline",
             "target_margin": solve_config.target_margin if solve_config is not None else float("nan"),
+            "target_margin_mode": solve_config.target_margin_mode if solve_config is not None else "baseline",
             "lambda_benign": solve_config.lambda_benign if solve_config is not None else float("nan"),
             "prompt_id": prompt_id,
             "eval_order": eval_order,
@@ -792,6 +831,7 @@ def generate_benign_rows(
             "eta": repair.eta,
             "solve_id": solve_config.solve_id if solve_config is not None else "baseline",
             "target_margin": solve_config.target_margin if solve_config is not None else float("nan"),
+            "target_margin_mode": solve_config.target_margin_mode if solve_config is not None else "baseline",
             "lambda_benign": solve_config.lambda_benign if solve_config is not None else float("nan"),
             "prompt_id": prompt_id,
             "eval_order": eval_order,
@@ -824,7 +864,18 @@ def summarize(
 ) -> pd.DataFrame:
     harm = pd.DataFrame(harm_rows)
     benign = pd.DataFrame(benign_rows)
-    keys = ["model", "condition", "sparsity", "repair", "repair_kind", "eta", "solve_id", "target_margin", "lambda_benign"]
+    keys = [
+        "model",
+        "condition",
+        "sparsity",
+        "repair",
+        "repair_kind",
+        "eta",
+        "solve_id",
+        "target_margin",
+        "target_margin_mode",
+        "lambda_benign",
+    ]
     summary = (
         harm.groupby(keys, dropna=False)
         .agg(
@@ -987,6 +1038,7 @@ def build_frontier(
                     "eta": eta,
                     "solve_id": solve_id,
                     "target_margin": float(repair["target_margin"]),
+                    "target_margin_mode": str(repair.get("target_margin_mode", "fixed")),
                     "lambda_benign": float(repair["lambda_benign"]),
                     "pruned_asr": base_asr,
                     "restore_s_asr": restore_asr,
@@ -1087,6 +1139,7 @@ def build_decision(
                     "best_eta": float(best_row["eta"]),
                     "best_solve_id": str(best_row["solve_id"]),
                     "best_target_margin": float(best_row["target_margin"]),
+                    "best_target_margin_mode": str(best_row.get("target_margin_mode", "fixed")),
                     "best_lambda_benign": float(best_row["lambda_benign"]),
                     "readout_repair_asr": float(best_row["readout_repair_asr"]),
                     "readout_repair_ppl_v2": float(best_row["readout_repair_ppl_v2"]),
@@ -1313,13 +1366,16 @@ def solve_condition_grid(
     for solve_config in solve_configs:
         solves = {}
         for layer in layers:
+            target_margin = solve_config.target_margin
+            if solve_config.target_margin_by_layer is not None:
+                target_margin = solve_config.target_margin_by_layer[layer]
             solves[layer] = solve_layer_update(
                 layer=layer,
                 harm_data=harm_data[layer],
                 benign_data=benign_data[layer],
                 r_hat=directions[layer],
                 tau=tau_by_layer[layer],
-                target_margin=solve_config.target_margin,
+                target_margin=target_margin,
                 lambda_benign=solve_config.lambda_benign,
                 ridge_mu=ridge_mu,
                 delta_max=delta_max,
@@ -1357,7 +1413,16 @@ def run_single(args: argparse.Namespace) -> None:
     arms = parse_repair_arms(args.repair_modes, args.eta_values)
     target_margin_sweep = args.target_margin_sweep or f"{args.target_margin:g}"
     lambda_benign_sweep = args.lambda_benign_sweep or f"{args.lambda_benign:g}"
-    solve_configs = parse_solve_configs(target_margin_sweep, lambda_benign_sweep)
+    if args.target_margin_mode == "dense_median" and args.target_margin_sweep:
+        print(
+            "[readout-repair] target-margin-sweep is ignored in dense_median mode; "
+            "m_star is computed from dense harmful calibration readouts."
+        )
+    solve_configs = parse_solve_configs(
+        target_margin_sweep,
+        lambda_benign_sweep,
+        target_margin_mode=args.target_margin_mode,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     harm_fit = load_prompt_slice(
@@ -1457,19 +1522,75 @@ def run_single(args: argparse.Namespace) -> None:
         "eval_limit": args.eval_limit,
         "benign_fit_limit": args.benign_fit_limit,
         "benign_eval_limit": args.benign_eval_limit,
-        "target_margin_sweep": [config.target_margin for config in solve_configs],
+        "target_margin_mode": args.target_margin_mode,
+        "target_margin_definition": (
+            "m_star[layer] = median_x(s_dense[layer](x)) - tau[layer]"
+            if args.target_margin_mode == "dense_median"
+            else "fixed"
+        ),
+        "target_margin_sweep": (
+            [config.target_margin for config in solve_configs]
+            if args.target_margin_mode == "fixed"
+            else []
+        ),
         "lambda_benign_sweep": [config.lambda_benign for config in solve_configs],
         "ridge_mu": args.ridge_mu,
         "delta_max": args.delta_max,
+        "target_margin_calibration": {},
         "conditions": {},
     }
 
     needs_solve_grid = any(arm.kind not in {"pruned", "restore_s"} for arm in arms)
     for condition in conditions:
         solves_by_id: dict[str, dict[int, LayerSolve]] = {}
+        condition_solve_configs = solve_configs
+        dense_harmful_median_by_layer: dict[int, float] = {}
+        computed_m_star_by_layer: dict[int, float] = {}
         if needs_solve_grid:
             print(f"[readout-repair] loading pruned model for solve condition={condition.name}")
             model, tokenizer = load_model_and_tokenizer(model_id, args.local_files_only)
+            if args.target_margin_mode == "dense_median":
+                print(f"[readout-repair] {condition.name} collecting dense harmful target readouts")
+                dense_harm_data = collect_down_inputs_and_scores(
+                    model,
+                    tokenizer,
+                    harm_fit,
+                    layers=layers,
+                    directions=directions,
+                    max_length=args.max_length,
+                )
+                dense_harmful_median_by_layer = dense_median_target_margins(
+                    dense_harm_data,
+                    layers=layers,
+                )
+                computed_m_star_by_layer = {
+                    layer: dense_harmful_median_by_layer[layer] - tau_by_layer[layer]
+                    for layer in layers
+                }
+                invalid = {
+                    layer: margin
+                    for layer, margin in computed_m_star_by_layer.items()
+                    if not math.isfinite(margin) or margin <= 0
+                }
+                if invalid:
+                    raise ValueError(f"Dense-derived target margins must be positive and finite: {invalid}")
+                computed_margin_summary = float(
+                    torch.tensor(list(computed_m_star_by_layer.values()), dtype=torch.float32).median().item()
+                )
+                condition_solve_configs = [
+                    SolveConfig(
+                        solve_id=config.solve_id,
+                        target_margin=computed_margin_summary,
+                        lambda_benign=config.lambda_benign,
+                        target_margin_mode="dense_median",
+                        target_margin_by_layer=dict(computed_m_star_by_layer),
+                    )
+                    for config in solve_configs
+                ]
+                print(
+                    f"[readout-repair] {condition.name} dense-derived m_star_by_layer="
+                    f"{computed_m_star_by_layer} median_s_dense_by_layer={dense_harmful_median_by_layer}"
+                )
             apply_condition_pruning(model, tokenizer, condition, args.calib_max_length)
             solves_by_id = solve_condition_grid(
                 model,
@@ -1481,21 +1602,38 @@ def run_single(args: argparse.Namespace) -> None:
                 harm_fit=harm_fit,
                 benign_fit=benign_fit,
                 max_length=args.max_length,
-                solve_configs=solve_configs,
+                solve_configs=condition_solve_configs,
                 ridge_mu=args.ridge_mu,
                 delta_max=args.delta_max,
             )
             del model
             release_memory()
+        solve_manifest["target_margin_calibration"][condition.name] = {
+            "target_margin_mode": args.target_margin_mode,
+            "dense_harmful_median_by_layer": (
+                dense_harmful_median_by_layer if args.target_margin_mode == "dense_median" else None
+            ),
+            "computed_m_star_by_layer": (
+                computed_m_star_by_layer if args.target_margin_mode == "dense_median" else None
+            ),
+        }
         solve_manifest["conditions"][condition.name] = {
             solve_id: {
-                "target_margin": next(config.target_margin for config in solve_configs if config.solve_id == solve_id),
-                "lambda_benign": next(config.lambda_benign for config in solve_configs if config.solve_id == solve_id),
+                "target_margin": next(
+                    config.target_margin for config in condition_solve_configs if config.solve_id == solve_id
+                ),
+                "target_margin_mode": next(
+                    config.target_margin_mode for config in condition_solve_configs if config.solve_id == solve_id
+                ),
+                "lambda_benign": next(
+                    config.lambda_benign for config in condition_solve_configs if config.solve_id == solve_id
+                ),
                 "rank1_added_params_total": int(sum(solve.rank1_added_params for solve in solves.values())),
                 "layers": {
                     str(layer): {
                         "tau": solve.tau,
                         "target": solve.target,
+                        "target_margin": solve.target - solve.tau,
                         "harm_n": solve.harm_n,
                         "benign_n": solve.benign_n,
                         "positive_delta_n": solve.positive_delta_n,
@@ -1519,7 +1657,7 @@ def run_single(args: argparse.Namespace) -> None:
             if arm.kind in {"pruned", "restore_s"}:
                 eval_tasks.append((arm, None, None))
             else:
-                for solve_config in solve_configs:
+                for solve_config in condition_solve_configs:
                     eval_tasks.append((arm, solve_config, solves_by_id[solve_config.solve_id]))
 
         for arm, solve_config, solves in eval_tasks:
@@ -1763,6 +1901,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-max-new-tokens", type=int, default=16)
     parser.add_argument("--response-ppl-threshold", type=float, default=100.0)
+    parser.add_argument(
+        "--target-margin-mode",
+        choices=["dense_median", "fixed"],
+        default="dense_median",
+        help=(
+            "dense_median computes m*[layer]=median(s_dense[layer])-tau[layer] on the harmful fit split; "
+            "fixed preserves the historical target-margin sweep."
+        ),
+    )
     parser.add_argument("--target-margin", type=float, default=2.0)
     parser.add_argument("--target-margin-sweep", default="")
     parser.add_argument("--lambda-benign", type=float, default=1.0)

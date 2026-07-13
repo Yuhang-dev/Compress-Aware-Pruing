@@ -13,7 +13,8 @@ MARGIN_DIR="${MARGIN_DIR:-results/phase15_margin_calib}"
 LAYERS="${LAYERS:-24,28,32}"
 RESTORE_ETA_VALUES="${RESTORE_ETA_VALUES:-0.25,0.5,1.0}"
 ETA_VALUES="${ETA_VALUES:-1.0}"
-TARGET_MARGIN_SWEEP="${TARGET_MARGIN_SWEEP:-2,6,12,20}"
+TARGET_MARGIN_MODE="${TARGET_MARGIN_MODE:-dense_median}"
+TARGET_MARGIN_SWEEP="${TARGET_MARGIN_SWEEP:-}"
 LAMBDA_BENIGN_SWEEP="${LAMBDA_BENIGN_SWEEP:-1,5,20}"
 RESTORE_ORACLE_MIN_COHERENCE="${RESTORE_ORACLE_MIN_COHERENCE:-0.95}"
 PPL_MAX_DELTA="${PPL_MAX_DELTA:-1.0}"
@@ -48,6 +49,7 @@ run_shard() {
   CONDITIONS="$CONDITION" \
   REPAIR_MODES="$repair_modes" \
   ETA_VALUES="$eta_values" \
+  TARGET_MARGIN_MODE="$TARGET_MARGIN_MODE" \
   TARGET_MARGIN_SWEEP="$target_sweep" \
   LAMBDA_BENIGN_SWEEP="$lambda_sweep" \
   OUTPUT_DIR="$shard_dir" \
@@ -56,7 +58,7 @@ run_shard() {
 }
 
 wait_for_slot
-run_shard "base_restore" "pruned restore_s" "$RESTORE_ETA_VALUES" "2" "1"
+run_shard "base_restore" "pruned restore_s" "$RESTORE_ETA_VALUES" "" "1"
 wait_for_slot
 run_shard "readout" "readout_repair" "$ETA_VALUES" "$TARGET_MARGIN_SWEEP" "$LAMBDA_BENIGN_SWEEP"
 wait_for_slot

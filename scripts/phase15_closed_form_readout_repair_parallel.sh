@@ -13,6 +13,7 @@ BENIGN_REFUSAL_MAX_DELTA="${BENIGN_REFUSAL_MAX_DELTA:-0.05}"
 ASR_MIN_DROP="${ASR_MIN_DROP:-0.03}"
 COHERENT_MAX_DROP="${COHERENT_MAX_DROP:-0.02}"
 RESTORE_ORACLE_MIN_COHERENCE="${RESTORE_ORACLE_MIN_COHERENCE:-0.95}"
+TARGET_MARGIN_MODE="${TARGET_MARGIN_MODE:-dense_median}"
 
 mkdir -p "$SHARD_ROOT" "$LOG_DIR"
 
@@ -23,7 +24,7 @@ for condition in $CONDITIONS; do
   mkdir -p "$shard_dir"
   log_file="$LOG_DIR/readout_repair_${condition}.log"
   echo "[readout-repair-parallel] launching condition=$condition out=$shard_dir log=$log_file"
-  CONDITIONS="$condition" OUTPUT_DIR="$shard_dir" PPL_WINDOW_INDEX_FILE="$shard_dir/ppl_windows_wikitext2_seed0.json" \
+  CONDITIONS="$condition" TARGET_MARGIN_MODE="$TARGET_MARGIN_MODE" OUTPUT_DIR="$shard_dir" PPL_WINDOW_INDEX_FILE="$shard_dir/ppl_windows_wikitext2_seed0.json" \
     bash scripts/phase15_closed_form_readout_repair.sh >"$log_file" 2>&1 &
   pids+=("$!")
   active=$((active + 1))
