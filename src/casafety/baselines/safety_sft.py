@@ -315,7 +315,10 @@ def tokenize_completion_only(
         user_messages = [{"role": "user", "content": record.prompt}]
         prompt_ids = list(
             tokenizer.apply_chat_template(
-                user_messages, tokenize=True, add_generation_prompt=True
+                user_messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=False,
             )
         )
         full_ids = list(
@@ -323,6 +326,7 @@ def tokenize_completion_only(
                 [*user_messages, {"role": "assistant", "content": record.response}],
                 tokenize=True,
                 add_generation_prompt=False,
+                return_dict=False,
             )
         )
         prefix = min(len(prompt_ids), len(full_ids))

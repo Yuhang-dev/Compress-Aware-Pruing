@@ -15,8 +15,11 @@ from casafety.baselines.safety_sft import (
 
 
 class FakeTokenizer:
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, return_dict
+    ):
         assert tokenize
+        assert return_dict is False
         prefix = [10, 11, 12]
         if len(messages) == 1:
             return prefix
