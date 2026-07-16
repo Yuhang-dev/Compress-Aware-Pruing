@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The shared bootstrap still exports the deprecated TRANSFORMERS_CACHE path.
+# Unset it so Transformers resolves models from HF_HOME/hub.
+unset TRANSFORMERS_CACHE
+
 # Shared launcher for the Qwen2.5-3B GCG table.  Pass MODEL to select the
 # dense/pruned/repaired checkpoint on the remote host.
 ROOT="${ROOT:-results/gcg_qwen3b}"
