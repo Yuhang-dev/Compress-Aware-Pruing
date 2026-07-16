@@ -11,13 +11,16 @@ STEPS="${STEPS:-250}"
 SEARCH_WIDTH="${SEARCH_WIDTH:-64}"
 TOPK="${TOPK:-64}"
 JUDGE="${JUDGE:-llamaguard}"
+JUDGE_MODEL="${JUDGE_MODEL:-meta-llama/Llama-Guard-3-8B}"
+LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-0}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/pbp/bin/python}"
 
 common=(
   --arm "$ARM" --model "$MODEL" --output-dir "$ROOT/$MODE/$ARM"
   --limit "$LIMIT" --steps "$STEPS" --search-width "$SEARCH_WIDTH" --topk "$TOPK"
-  --judge "$JUDGE" --shuffle --seed "${SEED:-0}"
+  --judge "$JUDGE" --judge-model "$JUDGE_MODEL" --shuffle --seed "${SEED:-0}"
 )
+if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then common+=(--local-files-only); fi
 
 case "${MODE:?set MODE=optimize|standard|adaptive}" in
   optimize)
