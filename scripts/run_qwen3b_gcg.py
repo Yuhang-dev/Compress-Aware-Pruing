@@ -26,7 +26,13 @@ import torch
 def load_model(model_id: str, local_files_only: bool):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        local_files_only=local_files_only,
+        # Transformers 4.47 expects this field to be a mapping, while Qwen
+        # checkpoints saved by Transformers 5 may persist it as a list.
+        extra_special_tokens={},
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
