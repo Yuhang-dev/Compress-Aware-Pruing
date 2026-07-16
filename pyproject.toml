@@ -13,6 +13,7 @@ dependencies = [
   "transformers",
   "datasets",
   "pandas",
+  "nanogcg>=0.3.0",
 ]
 
 [tool.setuptools.packages.find]
