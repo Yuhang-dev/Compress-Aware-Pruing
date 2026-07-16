@@ -67,6 +67,7 @@ def optimize_suffix(model, tokenizer, prompt: str, args: argparse.Namespace) -> 
 
     config = GCGConfig(
         num_steps=args.steps,
+        optim_str_init=" ".join(["x"] * args.suffix_tokens),
         search_width=args.search_width,
         topk=args.topk,
         n_replace=1,
