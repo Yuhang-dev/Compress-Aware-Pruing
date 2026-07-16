@@ -25,7 +25,10 @@ common=(
   --limit "$LIMIT" --steps "$STEPS" --search-width "$SEARCH_WIDTH" --topk "$TOPK" --suffix-tokens "$SUFFIX_TOKENS"
   --judge "$JUDGE" --judge-model "$JUDGE_MODEL" --shuffle --seed "${SEED:-0}"
 )
-if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then common+=(--local-files-only); fi
+if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then
+  export HF_DATASETS_OFFLINE=1
+  common+=(--local-files-only)
+fi
 
 case "${MODE:?set MODE=optimize|standard|adaptive}" in
   optimize)
