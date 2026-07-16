@@ -10,6 +10,7 @@ LIMIT="${LIMIT:-32}"
 STEPS="${STEPS:-250}"
 SEARCH_WIDTH="${SEARCH_WIDTH:-64}"
 TOPK="${TOPK:-64}"
+SUFFIX_TOKENS="${SUFFIX_TOKENS:-20}"
 JUDGE="${JUDGE:-llamaguard}"
 JUDGE_MODEL="${JUDGE_MODEL:-meta-llama/Llama-Guard-3-8B}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-0}"
@@ -17,7 +18,7 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/pbp/bin/python}"
 
 common=(
   --arm "$ARM" --model "$MODEL" --output-dir "$ROOT/$MODE/$ARM"
-  --limit "$LIMIT" --steps "$STEPS" --search-width "$SEARCH_WIDTH" --topk "$TOPK"
+  --limit "$LIMIT" --steps "$STEPS" --search-width "$SEARCH_WIDTH" --topk "$TOPK" --suffix-tokens "$SUFFIX_TOKENS"
   --judge "$JUDGE" --judge-model "$JUDGE_MODEL" --shuffle --seed "${SEED:-0}"
 )
 if [[ "$LOCAL_FILES_ONLY" == "1" ]]; then common+=(--local-files-only); fi
