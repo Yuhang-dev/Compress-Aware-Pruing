@@ -40,9 +40,15 @@ def main() -> None:
         text, count = re.subn(pattern, lambda _match, value=replacement: value, text, count=1, flags=re.MULTILINE)
         if count != 1:
             raise RuntimeError(f"Could not update row {label}")
+    reference = summaries[("dense", "standard")]
+    budget_text = (
+        f"L={reference['suffix_tokens']} tokens, $T={reference['steps']}$ steps, "
+        f"$R={reference['restarts']}$ restart{'' if int(reference['restarts']) == 1 else 's'}, "
+        f"$n={reference['n_prompts']}$ prompts"
+    )
     text = text.replace(
         r"L=\textit{TBD}$ tokens, $T=\textit{TBD}$ steps, $R=\textit{TBD}$ restarts, $n=\textit{TBD}$ prompts",
-        r"L=20 tokens, $T=250$ steps, $R=1$ restart, $n=32$ prompts",
+        budget_text,
     )
     args.table.write_text(text, encoding="utf-8")
 
