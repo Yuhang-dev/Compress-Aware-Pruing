@@ -1,0 +1,27 @@
+{
+  "figure_id": "fig:speca",
+  "model": "Qwen/Qwen2.5-3B-Instruct",
+  "condition": "wanda_50",
+  "repair_kind": "pruned",
+  "split": "harm_eval",
+  "label_column": "unsafe",
+  "positive_label": "coherent_unsafe",
+  "risk_score_definition": "rho_l(x) = -s_l(x)",
+  "prompt_boundary": "last prompt token before generation",
+  "layers": [
+    24,
+    28,
+    32
+  ],
+  "n": 128,
+  "n_positive": 37,
+  "n_negative": 91,
+  "bootstrap_replicates": 20000,
+  "bootstrap_seed": 2027,
+  "tau_rule": "s_l < tau_l",
+  "tau_source": "results/phase2_readout_repair_v1_shards/wanda_50/g_solve_manifest.json:tau_by_layer",
+  "input": "results/phase2_readout_repair_v1_shards/wanda_50/repair_details.csv",
+  "curve_csv": "fig_speca_within_w50_roc.csv",
+  "summary_csv": "fig_speca_within_w50_roc_summary.csv",
+  "status": "measured"
+}
