@@ -54,10 +54,9 @@ def main() -> None:
 
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     lines = ["row_order,arm,model,pruner,sparsity_pct,attack,attack_set,standard_asr_pct,standard_coherence_pct,adaptive_asr_pct,adaptive_coherence_pct,suffix_tokens,steps,restarts,n_prompts,status,include"]
-    csv_arm = {"dense": "dense", "wanda50": "pruned", "remar": "remar"}
     for index, arm in enumerate(("dense", "wanda50", "remar"), start=1):
         std, ada = summaries[(arm, "standard")], summaries[(arm, "adaptive")]
-        lines.append(",".join(map(str, [index, csv_arm[arm], "Qwen2.5-3B", "Wanda", 50, "GCG", "AdvBench", f"{std['asr_pct']:.6f}", f"{std['coherence_pct']:.6f}", f"{ada['asr_pct']:.6f}", f"{ada['coherence_pct']:.6f}", std["suffix_tokens"], std["steps"], std["restarts"], std["n_prompts"], "measured", 1])))
+        lines.append(",".join(map(str, [index, arm, "Qwen2.5-3B", "Wanda", 50, "GCG", "AdvBench", f"{std['asr_pct']:.6f}", f"{std['coherence_pct']:.6f}", f"{ada['asr_pct']:.6f}", f"{ada['coherence_pct']:.6f}", std["suffix_tokens"], std["steps"], std["restarts"], std["n_prompts"], "measured", 1])))
     args.csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"updated {args.table}")
     print(f"updated {args.csv}")
