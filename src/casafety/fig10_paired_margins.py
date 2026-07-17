@@ -17,6 +17,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .margin_calibration import collect_prompt_readouts
 from .remar_coverage_diag import prompt_identity
@@ -28,9 +29,9 @@ from .xstest_orbench_eval import (
     atomic_write_json,
     file_sha256,
     git_head,
-    load_model_and_tokenizer,
     read_json,
     sha256_text,
+    torch_dtype,
     verify_checkpoint,
     verify_repair,
 )
@@ -331,6 +332,33 @@ def initialize_run_config(
     return config
 
 
+def load_arm_model_and_tokenizer(
+    model_path: str,
+    args: argparse.Namespace,
+) -> tuple[Any, Any]:
+    # All arms must share the dense tokenizer. Some saved checkpoints contain
+    # tokenizer metadata written by an older Transformers release.
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.dense_model,
+        local_files_only=args.local_files_only,
+        trust_remote_code=False,
+    )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+    tokenizer.truncation_side = "left"
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch_dtype(args.dtype),
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        local_files_only=args.local_files_only,
+        trust_remote_code=False,
+    )
+    model.eval()
+    return model, tokenizer
+
+
 def collect_condition(
     args: argparse.Namespace,
     *,
@@ -359,7 +387,7 @@ def collect_condition(
     model = tokenizer = None
     try:
         print(f"[fig10] load {condition}: {model_path}")
-        model, tokenizer = load_model_and_tokenizer(model_path, args)
+        model, tokenizer = load_arm_model_and_tokenizer(model_path, args)
         if condition == "remar":
             applied = apply_remar(
                 model,
