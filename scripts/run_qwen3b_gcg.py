@@ -203,8 +203,30 @@ def main() -> None:
 
     try:
         if args.mode in ("optimize", "adaptive"):
+            completed: dict[int, dict[str, Any]] = {}
+            if suffix_path.is_file():
+                for line in suffix_path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    prompt_id = int(item["prompt_id"])
+                    if prompt_id in completed:
+                        raise ValueError(f"Duplicate prompt_id {prompt_id} in {suffix_path}")
+                    completed[prompt_id] = item
+
             suffix_rows = []
             for index, prompt in enumerate(prompts):
+                existing = completed.get(index)
+                if existing is not None:
+                    if str(existing.get("prompt")) != prompt:
+                        raise ValueError(
+                            f"Prompt mismatch for prompt_id {index} in {suffix_path}; "
+                            "refusing to reuse a suffix from a different split"
+                        )
+                    suffix_rows.append(existing)
+                    print(f"[gcg] resume {args.mode} {args.arm} {index + 1}/{len(prompts)}")
+                    continue
+
                 best = None
                 for restart in range(args.restarts):
                     args.seed = args.seed + restart
@@ -212,8 +234,8 @@ def main() -> None:
                     if best is None or len(candidate.strip()) > len(best.strip()):
                         best = candidate
                 suffix_rows.append({"prompt_id": index, "prompt": prompt, "suffix": best or ""})
+                write_jsonl(suffix_path, suffix_rows)
                 print(f"[gcg] {args.mode} {args.arm} {index + 1}/{len(prompts)}")
-            write_jsonl(suffix_path, suffix_rows)
         else:
             if not args.suffix_file:
                 raise ValueError("--suffix-file is required for --mode evaluate")
