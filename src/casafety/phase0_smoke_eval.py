@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import math
 import os
 import random
@@ -262,9 +263,51 @@ def apply_pruning(
     return pruned_layers
 
 
+def _load_tokenizer(model_id: str, local_files_only: bool, cache_dir: str | None):
+    kwargs = {
+        "local_files_only": local_files_only,
+        "cache_dir": cache_dir,
+    }
+    try:
+        return AutoTokenizer.from_pretrained(model_id, **kwargs)
+    except AttributeError as exc:
+        if "'list' object has no attribute 'keys'" not in str(exc):
+            raise
+        config_path = Path(model_id) / "tokenizer_config.json"
+        if not config_path.is_file():
+            raise
+        tokenizer_config = json.loads(config_path.read_text(encoding="utf-8"))
+        legacy_tokens = tokenizer_config.get("extra_special_tokens")
+        tokenizer_class = str(tokenizer_config.get("tokenizer_class", ""))
+        if not tokenizer_class.startswith("Qwen2Tokenizer") or not isinstance(
+            legacy_tokens, list
+        ):
+            raise RuntimeError(
+                "Cannot safely normalize legacy extra_special_tokens for "
+                f"{tokenizer_class or 'unknown tokenizer'}"
+            ) from exc
+        additional_tokens = tokenizer_config.get("additional_special_tokens", [])
+        if not isinstance(additional_tokens, list):
+            raise RuntimeError("additional_special_tokens must be a list") from exc
+        merged_tokens = list(additional_tokens)
+        for token in legacy_tokens:
+            if token not in merged_tokens:
+                merged_tokens.append(token)
+        print(
+            "[phase0] normalizing legacy Qwen2 extra_special_tokens "
+            f"({len(legacy_tokens)} tokens) for {model_id}"
+        )
+        return AutoTokenizer.from_pretrained(
+            model_id,
+            **kwargs,
+            extra_special_tokens={},
+            additional_special_tokens=merged_tokens,
+        )
+
+
 def load_model_and_tokenizer(model_id: str, local_files_only: bool):
     cache_dir = resolve_cache_dir(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only, cache_dir=cache_dir)
+    tokenizer = _load_tokenizer(model_id, local_files_only, cache_dir)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
@@ -280,7 +323,7 @@ def load_model_and_tokenizer(model_id: str, local_files_only: bool):
 
 def load_judge_model_and_tokenizer(model_id: str, local_files_only: bool):
     cache_dir = resolve_cache_dir(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only, cache_dir=cache_dir)
+    tokenizer = _load_tokenizer(model_id, local_files_only, cache_dir)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(

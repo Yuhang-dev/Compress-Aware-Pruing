@@ -30,6 +30,7 @@ from .closed_form_readout_repair import (
 from .config import load_config
 from .models import resolve_model_id
 from .ood_residual_diag import (
+    dataset_args,
     directions_and_taus,
     judge_rows,
     load_slice,
@@ -49,14 +50,136 @@ from .vpref import decoder_layers
 DATASETS = ("advbench", "harmbench", "strongreject")
 
 
-def prompt_id_hash(prompt_ids: list[int]) -> str:
-    payload = ",".join(str(int(value)) for value in prompt_ids)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _hash_parts(parts: list[str]) -> str:
+    digest = hashlib.sha256()
+    for part in parts:
+        payload = part.encode("utf-8")
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def prompt_id_hash(prompt_ids: list[int], *, namespace: str = "") -> str:
+    if not namespace:
+        payload = ",".join(str(int(value)) for value in prompt_ids)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return _hash_parts([namespace, *(str(int(value)) for value in prompt_ids)])
+
+
+def prompt_identity(
+    prompts: list[tuple[int, str]],
+    *,
+    dataset: str,
+    dataset_id: str,
+    dataset_config: str | None,
+    dataset_split: str,
+    dataset_column: str,
+) -> dict[str, Any]:
+    prompt_ids = [int(prompt_id) for prompt_id, _ in prompts]
+    prompt_texts = [text.replace("\r\n", "\n").replace("\r", "\n").strip() for _, text in prompts]
+    source = [
+        dataset,
+        dataset_id,
+        dataset_config or "<default>",
+        dataset_split,
+        dataset_column,
+    ]
+    split_parts = list(source)
+    for prompt_id, prompt_text in zip(prompt_ids, prompt_texts):
+        split_parts.extend([str(prompt_id), prompt_text])
+    return {
+        "dataset_id": dataset_id,
+        "dataset_config": dataset_config or "<default>",
+        "dataset_split": dataset_split,
+        "dataset_column": dataset_column,
+        "prompt_count": len(prompts),
+        "prompt_numeric_id_sha256": prompt_id_hash(prompt_ids),
+        "prompt_id_sha256": prompt_id_hash(prompt_ids, namespace="|".join(source)),
+        "prompt_content_sha256": _hash_parts(prompt_texts),
+        "prompt_split_sha256": _hash_parts(split_parts),
+    }
 
 
 def load_eval_prompts(args: argparse.Namespace, dataset: str) -> list[tuple[int, str]]:
     offset = args.advbench_eval_offset if dataset == "advbench" else args.ood_eval_offset
     return load_slice(args, dataset, offset=offset, limit=args.eval_limit)
+
+
+def dataset_identity(
+    args: argparse.Namespace,
+    dataset: str,
+    *,
+    prompts: list[tuple[int, str]] | None = None,
+) -> dict[str, Any]:
+    dataset_id, config, split, column = dataset_args(args, dataset)
+    selected = prompts if prompts is not None else load_eval_prompts(args, dataset)
+    return prompt_identity(
+        selected,
+        dataset=dataset,
+        dataset_id=dataset_id,
+        dataset_config=config,
+        dataset_split=split,
+        dataset_column=column,
+    )
+
+
+def validate_distinct_dataset_content_hashes(behavior: pd.DataFrame) -> None:
+    required = {"dataset", "prompt_content_sha256", "prompt_split_sha256"}
+    missing = sorted(required.difference(behavior.columns))
+    if missing:
+        raise ValueError(f"Behavior rows lack dataset identity columns: {missing}")
+    for column in ("prompt_content_sha256", "prompt_split_sha256"):
+        duplicated = behavior.groupby(column, dropna=False)["dataset"].nunique()
+        collisions = duplicated[duplicated > 1].index.astype(str).tolist()
+        if collisions:
+            raise ValueError(f"Different dataset labels share {column}: {collisions}")
+
+
+def verify_behavior_identities(
+    args: argparse.Namespace, behavior: pd.DataFrame
+) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
+    verified = behavior.copy()
+    identities: dict[str, dict[str, Any]] = {}
+    for dataset in DATASETS:
+        matches = verified.index[verified["dataset"].eq(dataset)].tolist()
+        if len(matches) != 1:
+            raise ValueError(f"Expected one behavior row for {dataset}, found {len(matches)}")
+        row_index = matches[0]
+        expected = dataset_identity(args, dataset)
+        identities[dataset] = expected
+        content_hash = (
+            verified.at[row_index, "prompt_content_sha256"]
+            if "prompt_content_sha256" in verified.columns
+            else pd.NA
+        )
+        legacy_row = pd.isna(content_hash) or str(content_hash).strip() == ""
+        if legacy_row and "prompt_id_sha256" in verified.columns:
+            legacy_hash = verified.at[row_index, "prompt_id_sha256"]
+            if not pd.isna(legacy_hash) and str(legacy_hash).strip():
+                if str(legacy_hash) != expected["prompt_numeric_id_sha256"]:
+                    raise ValueError(
+                        f"Legacy prompt ID mismatch for {dataset}: "
+                        f"shard={legacy_hash!r}, loader={expected['prompt_numeric_id_sha256']!r}"
+                    )
+        for key, expected_value in expected.items():
+            if key not in verified.columns:
+                verified[key] = pd.NA
+            actual = verified.at[row_index, key]
+            if legacy_row or pd.isna(actual) or str(actual).strip() == "":
+                verified.at[row_index, key] = expected_value
+                continue
+            matches_expected = (
+                int(actual) == int(expected_value)
+                if key == "prompt_count"
+                else str(actual) == str(expected_value)
+            )
+            if not matches_expected:
+                raise ValueError(
+                    f"Dataset identity mismatch for {dataset}.{key}: "
+                    f"shard={actual!r}, loader={expected_value!r}"
+                )
+    validate_distinct_dataset_content_hashes(verified)
+    return verified, identities
 
 
 def prepare(args: argparse.Namespace) -> None:
@@ -131,6 +254,23 @@ def apply_frozen_updates(model, payload: dict[str, Any]) -> None:
             module.weight.add_(delta_w.to(device=module.weight.device, dtype=module.weight.dtype))
 
 
+def payload_target_level(
+    payload: dict[str, Any],
+    layer: int,
+    *,
+    fallback_epsilon: float,
+) -> float:
+    calibration = payload.get("calibration", {})
+    specs = calibration.get("target_specs", {})
+    spec = specs.get(layer, specs.get(str(layer), {}))
+    if isinstance(spec, dict) and "target_level" in spec:
+        return float(spec["target_level"])
+    stats = payload.get("solves", {}).get(layer, {}).get("stats", {})
+    if "target_level" in stats:
+        return float(stats["target_level"])
+    return float(payload["taus"][layer]) + float(fallback_epsilon)
+
+
 def conditional_samples(
     data: dict[int, dict[str, Any]],
     payload: dict[str, Any],
@@ -148,7 +288,9 @@ def conditional_samples(
         predicted = float(payload["eta"]) * (
             data[layer]["a"].float() @ solve["g"].float()
         )
-        required = (float(payload["taus"][layer]) + epsilon - s).clamp_min(0.0)
+        required = (
+            payload_target_level(payload, layer, fallback_epsilon=epsilon) - s
+        ).clamp_min(0.0)
         underfill = required - predicted
         for index, prompt_id in enumerate(prompt_ids):
             row = {
@@ -467,8 +609,20 @@ def conditional_aggregates(
     return pd.DataFrame(rows)
 
 
-def behavior_aggregate(judged: list[dict[str, Any]], *, dataset: str) -> pd.DataFrame:
+def behavior_aggregate(
+    judged: list[dict[str, Any]], *, dataset: str, identity: dict[str, Any]
+) -> pd.DataFrame:
     frame = pd.DataFrame(judged)
+    if len(frame) != int(identity["prompt_count"]):
+        raise ValueError(
+            f"Judged prompt count for {dataset} is {len(frame)}, "
+            f"but the loaded split identity contains {identity['prompt_count']} prompts."
+        )
+    judged_id_hash = prompt_id_hash(frame["prompt_id"].astype(int).tolist())
+    if judged_id_hash != identity["prompt_numeric_id_sha256"]:
+        raise ValueError(
+            f"Judged prompt IDs for {dataset} do not match the loaded split identity."
+        )
     return pd.DataFrame(
         [
             {
@@ -482,7 +636,7 @@ def behavior_aggregate(judged: list[dict[str, Any]], *, dataset: str) -> pd.Data
                 "coherent_rate": float(frame["coherent"].mean()),
                 "refusal_n": int(frame["refused"].sum()),
                 "refusal_rate": float(frame["refused"].mean()),
-                "prompt_id_sha256": prompt_id_hash(frame["prompt_id"].astype(int).tolist()),
+                **identity,
             }
         ]
     )
@@ -537,7 +691,8 @@ def run_cell(args: argparse.Namespace) -> None:
     conditional = conditional_aggregates(
         samples, judged, prefill, dataset=args.eval_dataset
     )
-    behavior = behavior_aggregate(judged, dataset=args.eval_dataset)
+    identity = dataset_identity(args, args.eval_dataset, prompts=prompts)
+    behavior = behavior_aggregate(judged, dataset=args.eval_dataset, identity=identity)
     args.shard_dir.mkdir(parents=True, exist_ok=True)
     write_text_free_csv(temporal, args.shard_dir / f"coverage_temporal_{args.eval_dataset}.csv")
     write_text_free_csv(sequences, args.shard_dir / f"coverage_sequences_{args.eval_dataset}.csv")
@@ -583,6 +738,7 @@ def run_merge(args: argparse.Namespace) -> None:
     sequences = pd.concat([pd.read_csv(path) for path in sequence_paths], ignore_index=True)
     conditional = pd.concat([pd.read_csv(path) for path in conditional_paths], ignore_index=True)
     behavior = pd.concat([pd.read_csv(path) for path in behavior_paths], ignore_index=True)
+    behavior, identities = verify_behavior_identities(args, behavior)
     write_text_free_csv(temporal, args.output_dir / "coverage_temporal.csv")
     write_text_free_csv(sequences, args.output_dir / "coverage_temporal_sequences.csv")
     write_text_free_csv(conditional, args.output_dir / "coverage_conditional.csv")
@@ -662,6 +818,7 @@ def run_merge(args: argparse.Namespace) -> None:
     combined = {
         "part1": part1,
         "part2": part2,
+        "dataset_identities": identities,
         "interpretation": (
             "Part 1 determines whether the historical high-sparsity residual survives complete scalar-margin restoration. Part 2 localizes the deployable ReMaR OOD gap to conditional prompt coverage, temporal decode coverage, both, or neither under the registered thresholds."
         ),

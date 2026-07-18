@@ -41,9 +41,12 @@ from .remar_coverage_diag import (
     behavior_aggregate,
     conditional_aggregates,
     conditional_samples,
+    dataset_identity,
     install_readout_trace_hooks,
     load_eval_prompts,
     outcome_group,
+    payload_target_level,
+    verify_behavior_identities,
 )
 
 
@@ -93,7 +96,14 @@ def generate_arm_traces(
 ) -> tuple[list[dict[str, Any]], dict[int, dict[int, list[float]]]]:
     layers = [int(value) for value in payload["layers"]]
     directions = {layer: payload["solves"][layer]["r_hat"].float() for layer in layers}
-    floor_target = {layer: float(payload["taus"][layer] + args.epsilon) for layer in layers}
+    floor_target = {
+        layer: payload_target_level(
+            payload,
+            layer,
+            fallback_epsilon=args.epsilon,
+        )
+        for layer in layers
+    }
     rows: list[dict[str, Any]] = []
     traces: dict[int, dict[int, list[float]]] = {}
     for index, (prompt_id, prompt) in enumerate(prompts):
@@ -376,7 +386,10 @@ def run_cell(args: argparse.Namespace) -> None:
     conditional = conditional_aggregates(
         samples, judged_remar, remar_prefill, dataset=args.eval_dataset
     )
-    behavior = behavior_aggregate(judged_remar, dataset=args.eval_dataset)
+    identity = dataset_identity(args, args.eval_dataset, prompts=prompts)
+    behavior = behavior_aggregate(
+        judged_remar, dataset=args.eval_dataset, identity=identity
+    )
     behavior["canonical_vector_sha256"] = payload["vector_sha256"]
     args.shard_dir.mkdir(parents=True, exist_ok=True)
     write_text_free_csv(temporal, args.shard_dir / f"temporal_v2_{args.eval_dataset}.csv")
@@ -403,6 +416,7 @@ def run_merge(args: argparse.Namespace) -> None:
         name: pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
         for name, paths in groups.items()
     }
+    frames["behavior"], identities = verify_behavior_identities(args, frames["behavior"])
     hashes = frames["behavior"]["canonical_vector_sha256"].drop_duplicates().tolist()
     if len(hashes) != 1:
         raise ValueError(f"Workers did not use one canonical vector hash: {hashes}")
@@ -449,6 +463,7 @@ def run_merge(args: argparse.Namespace) -> None:
         "canonical": canonical,
         "canonical_vector_sha256": hashes[0],
         "all_workers_same_canonical_hash": True,
+        "dataset_identities": identities,
         "part1": part1,
         "part2": {
             "prefill_margin_fraction_threshold": float(args.prefill_margin_fraction),
